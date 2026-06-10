@@ -1,4 +1,5 @@
 from celery import Celery
+from kombu import Queue, Exchange
 from app.core.config import settings
 
 celery_app = Celery(
@@ -7,28 +8,23 @@ celery_app = Celery(
     backend=settings.REDIS_URL
 )
 
-# Explicit queue declaration
+# Explicit queue declaration using kombu Queue objects (Celery requires Queue
+# instances here, not plain dicts).
+high_exchange = Exchange("high", type="direct")
+low_exchange = Exchange("low", type="direct")
+
 celery_app.conf.task_queues = (
-    {
-        "name": "high",
-        "exchange": "high",
-        "exchange_type": "direct",
-        "routing_key": "high"
-    },
-    {
-        "name": "low",
-        "exchange": "low",
-        "exchange_type": "direct",
-        "routing_key": "low"
-    }
+    Queue("high", exchange=high_exchange, routing_key="high"),
+    Queue("low", exchange=low_exchange, routing_key="low"),
 )
 
-# Route tasks to priority queues: fast chat/tag tasks to 'high', long transcription jobs to 'low'
+# Route long transcription jobs to 'low'; fast chat/tag tasks default to 'high'.
 celery_app.conf.task_routes = {
     "app.worker.tasks.process_podcast": {"queue": "low", "routing_key": "low"},
 }
 
-# Default queue for chat/tagging tasks
 celery_app.conf.task_default_queue = "high"
+celery_app.conf.task_default_exchange = "high"
+celery_app.conf.task_default_routing_key = "high"
 
 celery_app.autodiscover_tasks(["app.worker"])

@@ -106,6 +106,114 @@ def _build_difficulty_plan(count: int, difficulty_profile: Optional[Dict[str, in
     return plan[:count]
 
 
+def _salient_phrase(text: str, lang: str = "en") -> Optional[str]:
+    """Pick the most salient noun-ish phrase (proper noun / long content word) to blank out."""
+    cleaned = _clean_text(re.sub(r"^[A-Z_0-9]+:\s*", "", text or ""))
+    # Prefer multi-word proper-noun sequences (e.g. "North Korea", "Middle East")
+    proper = re.findall(r"\b([A-Z][a-zçğıöşü]+(?:\s+[A-Z][a-zçğıöşü]+){0,2})\b", cleaned)
+    proper = [p for p in proper if len(p) > 3 and p.lower() not in {"the", "this", "that"}]
+    if proper:
+        return max(proper, key=len)
+    # Fallback: longest content word
+    return _pick_keyword(cleaned)
+
+
+def build_quiz_from_summary(
+    summary: Dict[str, Any],
+    count: int = 8,
+    lang: str = "en",
+) -> List[Dict[str, Any]]:
+    """Build MEANINGFUL comprehension questions from already-LLM-generated summary content.
+
+    Uses insight_attribution (insight + evidence + timestamp) and key_takeaways to create:
+      1) Evidence -> Insight matching (what point does this moment support?)
+      2) Fill-in-the-blank on key takeaways
+    Distractors are other REAL insights/takeaways, so options are always plausible.
+    No meaningless 'who said' or keyword-jumble questions.
+    """
+    is_tr = (lang or "en").startswith("tr")
+    insights = [i for i in (summary.get("insight_attribution") or []) if isinstance(i, dict) and i.get("insight")]
+    takeaways = [t for t in (summary.get("key_takeaways") or []) if isinstance(t, str) and len(t) > 25]
+
+    # Deduplicate takeaway/insight text
+    def _norm(s: str) -> str:
+        return _clean_text(s).lower()[:80]
+
+    quiz: List[Dict[str, Any]] = []
+
+    T = {
+        "evidence_q": "Bu bölümde anlatılanlar hangi sonucu/çıkarımı destekliyor?" if is_tr
+                       else "Which conclusion does this part of the episode support?",
+        "blank_q": "Ana fikri tamamlayın: " if is_tr else "Complete the key point: ",
+        "exp_ev": "Bu sonuç, ilgili bölümdeki kanıt cümlesine dayanır." if is_tr
+                   else "This conclusion is grounded in the evidence from this segment.",
+        "exp_blank": "Doğru terim bölümün ana fikrinden gelir." if is_tr
+                      else "The correct term comes from the episode's key point.",
+    }
+
+    # --- Type 1: Evidence -> Insight matching ---
+    insight_texts = [i["insight"] for i in insights]
+    for i in insights:
+        if len(quiz) >= count:
+            break
+        evidence = _clean_text(re.sub(r"^[A-Z_0-9]+:\s*", "", i.get("evidence_text") or ""))
+        if len(evidence) < 30:
+            continue
+        correct = _clean_text(i["insight"])
+        distractors = [d for d in insight_texts if _norm(d) != _norm(correct)]
+        random.shuffle(distractors)
+        options = [correct] + distractors[:3]
+        options = list(dict.fromkeys(options))[:4]
+        if len(options) < 3:
+            continue
+        opts = options[:]
+        random.shuffle(opts)
+        quiz.append({
+            "question": f"{T['evidence_q']}\n\n“{_short_quote(evidence, 28)}”",
+            "options": opts,
+            "correct_answer": opts.index(correct),
+            "explanation": T["exp_ev"],
+            "source_start": i.get("start"),
+            "source_end": i.get("end"),
+            "source_text": evidence,
+            "difficulty": "medium",
+            "cognitive_level": "understand",
+            "question_type": "comprehension",
+        })
+
+    # --- Type 2: Fill-in-the-blank from takeaways ---
+    salient_pool = [p for p in (_salient_phrase(t, lang) for t in takeaways) if p]
+    for t in takeaways:
+        if len(quiz) >= count:
+            break
+        phrase = _salient_phrase(t, lang)
+        if not phrase or phrase not in t:
+            continue
+        blanked = t.replace(phrase, "______", 1)
+        distractors = [p for p in salient_pool if p.lower() != phrase.lower()]
+        random.shuffle(distractors)
+        options = [phrase] + distractors[:3]
+        options = list(dict.fromkeys(options))[:4]
+        if len(options) < 3:
+            continue
+        opts = options[:]
+        random.shuffle(opts)
+        quiz.append({
+            "question": f"{T['blank_q']}“{blanked}”",
+            "options": opts,
+            "correct_answer": opts.index(phrase),
+            "explanation": T["exp_blank"],
+            "source_start": None,
+            "source_end": None,
+            "source_text": t,
+            "difficulty": "easy",
+            "cognitive_level": "remember",
+            "question_type": "fill_blank",
+        })
+
+    return quiz[:count]
+
+
 def build_quiz_from_transcript(
     segments: List[Dict[str, Any]],
     speaker_map: Optional[Dict[str, str]] = None,

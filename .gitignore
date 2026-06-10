@@ -50,3 +50,5 @@ Thumbs.db
 *.m4a
 *.wav
 *.mp4
+backend/.cache
+backend/.coverage

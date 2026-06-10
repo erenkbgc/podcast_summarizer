@@ -160,7 +160,7 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
                 </div>
 
                 <div className="space-y-4">
-                    <h4 className="text-xl font-bold leading-tight font-heading tracking-tight text-foreground">{q.question}</h4>
+                    <h4 className="text-xl font-bold leading-snug font-heading tracking-tight text-foreground whitespace-pre-line">{q.question}</h4>
                     {q.source_start !== undefined && (
                         <div className="flex items-center gap-2">
                             <button

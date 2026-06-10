@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { BookOpen, CheckCircle2, Quote2, AlertCircle, Clock } from "lucide-react";
+import { BookOpen, CheckCircle2, Quote, AlertCircle, Clock, Sparkles } from "lucide-react";
 import { Summary } from "@/lib/api";
 
 interface SimpleSummaryViewProps {
@@ -12,77 +11,100 @@ interface SimpleSummaryViewProps {
   transcriptSegments?: any[];
 }
 
-export function SimpleSummaryView({ summary, status, progress, onSeek, transcriptSegments }: SimpleSummaryViewProps) {
-  const [expandedQuote, setExpandedQuote] = useState<number | null>(null);
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
+export function SimpleSummaryView({ summary, status, progress, onSeek }: SimpleSummaryViewProps) {
   if (!summary) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
-        <div className="text-center space-y-4 max-w-md">
-          <AlertCircle className="w-12 h-12 mx-auto text-slate-400" />
-          <p className="text-slate-600 font-medium">Episode still processing...</p>
-          <div className="w-full bg-slate-200 rounded-full h-2">
+      <div className="flex-1 flex items-center justify-center bg-background">
+        <div className="text-center space-y-5 max-w-md px-8">
+          <div className="relative w-16 h-16 mx-auto">
+            <div className="absolute inset-0 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+            <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-primary" />
+          </div>
+          <p className="text-muted-foreground font-medium">Episode is being processed…</p>
+          <div className="w-full bg-secondary rounded-full h-1.5 overflow-hidden">
             <div
-              className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+              className="bg-primary h-full rounded-full transition-all duration-500"
               style={{ width: `${(progress || 0) * 100}%` }}
             />
           </div>
-          <p className="text-xs text-slate-500">{Math.round((progress || 0) * 100)}% complete</p>
+          <p className="text-xs text-muted-foreground/60 uppercase tracking-widest font-bold">
+            {Math.round((progress || 0) * 100)}% · {status}
+          </p>
         </div>
       </div>
     );
   }
 
+  const insights = (summary.key_insights || []) as any[];
+  const actions = (summary.action_items || []) as any[];
+  const quotes = (summary.key_quotes || []) as any[];
+
   return (
-    <div className="flex-1 overflow-y-auto bg-gradient-to-br from-slate-50 to-white">
-      <div className="max-w-3xl mx-auto px-8 py-12 space-y-12">
+    <div className="flex-1 overflow-y-auto bg-background">
+      <div className="max-w-3xl mx-auto px-8 py-12 space-y-14">
         {/* Executive Brief */}
         {summary.executive_brief && (
           <section className="space-y-3">
-            <h2 className="text-2xl font-bold text-slate-900">Key Takeaway</h2>
-            <p className="text-lg leading-relaxed text-slate-700">
+            <span className="text-[10px] font-black uppercase tracking-[0.25em] text-primary">
+              Key Takeaway
+            </span>
+            <p className="text-2xl leading-relaxed font-medium text-foreground font-heading">
               {summary.executive_brief}
             </p>
           </section>
         )}
 
         {/* Key Insights */}
-        {summary.key_insights && summary.key_insights.length > 0 && (
-          <section className="space-y-4">
-            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-              <BookOpen className="w-5 h-5 text-blue-600" />
-              Key Insights ({summary.key_insights.length})
+        {insights.length > 0 && (
+          <section className="space-y-5">
+            <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-primary" />
+              Key Insights
             </h3>
             <div className="space-y-3">
-              {summary.key_insights.slice(0, 5).map((insight: any, i: number) => (
-                <div key={i} className="p-4 bg-white rounded-lg border border-slate-200 hover:border-blue-300 transition-colors">
-                  <p className="text-slate-800 font-medium leading-relaxed">
-                    {typeof insight === 'string' ? insight : insight.text}
-                  </p>
-                  {insight.why_matters && (
-                    <p className="text-sm text-slate-600 mt-2 italic">
-                      💡 {insight.why_matters}
-                    </p>
-                  )}
-                </div>
-              ))}
+              {insights.slice(0, 6).map((insight, i) => {
+                const text = typeof insight === "string" ? insight : insight.text;
+                const why = typeof insight === "object" ? insight.why_matters : null;
+                return (
+                  <div
+                    key={i}
+                    className="p-5 bg-card rounded-2xl border border-border hover:border-primary/40 transition-colors"
+                  >
+                    <p className="text-foreground leading-relaxed">{text}</p>
+                    {why && (
+                      <p className="text-sm text-muted-foreground mt-2 pl-3 border-l-2 border-primary/30">
+                        {why}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}
 
         {/* Action Items */}
-        {summary.action_items && summary.action_items.length > 0 && (
-          <section className="space-y-4">
-            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-green-600" />
-              Action Items ({summary.action_items.length})
+        {actions.length > 0 && (
+          <section className="space-y-5">
+            <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+              Action Items
             </h3>
             <div className="space-y-2">
-              {summary.action_items.slice(0, 5).map((item: any, i: number) => (
-                <div key={i} className="flex gap-3 p-3 bg-green-50 rounded-lg border border-green-200">
-                  <input type="checkbox" className="mt-0.5 cursor-pointer" />
-                  <span className="text-slate-800 flex-1">
-                    {typeof item === 'string' ? item : item.text}
+              {actions.slice(0, 6).map((item, i) => (
+                <div
+                  key={i}
+                  className="flex gap-3 p-4 bg-card rounded-xl border border-border"
+                >
+                  <div className="mt-1 w-4 h-4 rounded-md border-2 border-emerald-500/50 shrink-0" />
+                  <span className="text-foreground flex-1 leading-relaxed">
+                    {typeof item === "string" ? item : item.text}
                   </span>
                 </div>
               ))}
@@ -91,48 +113,52 @@ export function SimpleSummaryView({ summary, status, progress, onSeek, transcrip
         )}
 
         {/* Key Quotes */}
-        {summary.key_quotes && summary.key_quotes.length > 0 && (
-          <section className="space-y-4">
-            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-              <Quote2 className="w-5 h-5 text-purple-600" />
+        {quotes.length > 0 && (
+          <section className="space-y-5">
+            <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+              <Quote className="w-4 h-4 text-purple-400" />
               Memorable Quotes
             </h3>
             <div className="space-y-3">
-              {summary.key_quotes.slice(0, 4).map((quote: any, i: number) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    if (quote.timestamp) onSeek(quote.timestamp);
-                    setExpandedQuote(expandedQuote === i ? null : i);
-                  }}
-                  className="w-full text-left p-4 bg-purple-50 rounded-lg border border-purple-200 hover:border-purple-400 transition-all group"
-                >
-                  <div className="flex gap-3 items-start">
-                    <div className="text-2xl leading-none text-purple-400 mt-1">❝</div>
-                    <div className="flex-1">
-                      <p className="italic text-slate-800 leading-relaxed">
-                        "{quote.text || quote}"
-                      </p>
+              {quotes.slice(0, 4).map((quote, i) => {
+                const text = quote.text || quote;
+                const ts = quote.timestamp;
+                return (
+                  <div
+                    key={i}
+                    className="p-5 bg-card rounded-2xl border border-border relative overflow-hidden"
+                  >
+                    <div className="absolute top-3 left-4 text-4xl leading-none text-purple-400/30 font-serif">
+                      &ldquo;
+                    </div>
+                    <p className="italic text-foreground leading-relaxed pl-8">{text}</p>
+                    <div className="flex items-center justify-between mt-3 pl-8">
                       {quote.speaker && (
-                        <p className="text-xs text-slate-600 mt-2">— {quote.speaker}</p>
+                        <span className="text-xs text-muted-foreground">— {quote.speaker}</span>
                       )}
-                      {quote.timestamp && (
+                      {typeof ts === "number" && ts > 0 && (
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onSeek(quote.timestamp);
-                          }}
-                          className="text-xs text-blue-600 hover:text-blue-800 mt-2 flex items-center gap-1"
+                          onClick={() => onSeek(ts)}
+                          className="ml-auto text-xs text-primary hover:text-primary/80 flex items-center gap-1 font-mono font-bold"
                         >
                           <Clock className="w-3 h-3" />
-                          Jump to {Math.floor(quote.timestamp / 60)}:{String(Math.floor(quote.timestamp % 60)).padStart(2, '0')}
+                          {formatTime(ts)}
                         </button>
                       )}
                     </div>
                   </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
+          </section>
+        )}
+
+        {/* Fallback global summary */}
+        {!insights.length && !actions.length && summary.global_summary && (
+          <section className="space-y-3">
+            <p className="text-foreground leading-relaxed whitespace-pre-wrap">
+              {summary.global_summary}
+            </p>
           </section>
         )}
       </div>

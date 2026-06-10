@@ -75,6 +75,7 @@ services:
       OLLAMA_URL: http://ollama:11434
       QDRANT_URL: http://qdrant:6333
     volumes:
+      - ./backend:/app
       - ./data/audio:/app/data/audio
     ports:
       - "8000:8000"
@@ -111,6 +112,7 @@ services:
       OLLAMA_URL: http://ollama:11434
       QDRANT_URL: http://qdrant:6333
     volumes:
+      - ./backend:/app
       - ./data/audio:/app/data/audio
     command: celery -A app.worker.celery_app worker --loglevel=info -E --queues=high --concurrency=4
     deploy:
@@ -141,6 +143,7 @@ services:
       OLLAMA_URL: http://ollama:11434
       QDRANT_URL: http://qdrant:6333
     volumes:
+      - ./backend:/app
       - ./data/audio:/app/data/audio
     command: celery -A app.worker.celery_app worker --loglevel=info -E --queues=low --concurrency=2
     deploy:

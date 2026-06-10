@@ -4,7 +4,7 @@ from app.models.podcast import Episode, Transcript, Summary, Chapter, Glossary, 
 from app.services.downloader import Downloader
 from app.services.transcriber import Transcriber
 from app.services.llm_client import LLMClient
-from app.services.quiz_builder import build_quiz_from_transcript
+from app.services.quiz_builder import build_quiz_from_transcript, build_quiz_from_summary
 from app.services.fact_checker import FactChecker
 from app.services.embeddings import EmbeddingService
 from app.services.vector_store import VectorStore
@@ -719,6 +719,34 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
         try:
             chapters_data = llm.extract_chapters(transcript_data["segments"], lang=lang)
             update_episode_status(db, episode, "extracting_chapters", 0.75)
+
+            # Fallback: derive a book-style table of contents from topic segments +
+            # insights when the LLM produced too few chapters (e.g. weak local model).
+            if len(chapters_data) < 2 and topic_transitions:
+                derived: list = []
+                for tt in topic_transitions:
+                    t_start = float(tt.get("start", 0.0) or 0.0)
+                    t_end = float(tt.get("end", t_start + 1e9) or (t_start + 1e9))
+                    # Find an insight inside this topic window for the description.
+                    desc = ""
+                    for ins in (merged_attr or []):
+                        s = float(ins.get("start", -1) or -1)
+                        if t_start <= s < t_end and ins.get("insight"):
+                            desc = str(ins["insight"]).strip()
+                            break
+                    title = str(tt.get("topic", "") or "").strip()
+                    if not title:
+                        continue
+                    derived.append({
+                        "timestamp": t_start,
+                        "title": title,
+                        "summary": desc,
+                        "is_main": "True",
+                    })
+                if len(derived) >= 2:
+                    print(f"Using {len(derived)} fallback chapters from topic segments.")
+                    chapters_data = derived
+
             for ch in chapters_data:
                 is_main_val = 1 if str(ch.get("is_main", "True")).lower() == "true" else 0
                 chapter = Chapter(
@@ -967,15 +995,29 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 return valid < 3  # Need at least 3 valid questions
 
             if _is_low_quality_quiz(quiz_data):
-                print("LLM quiz quality low; trying deterministic fallback.")
-                quiz_data = build_quiz_from_transcript(
-                    transcript_data.get("segments", []),
-                    speaker_map=episode.speaker_map or {},
+                # Summary-based fallback produces MEANINGFUL questions from the
+                # already-LLM-generated insights/takeaways (no 'who said' garbage).
+                print("LLM quiz quality low; using summary-based fallback.")
+                quiz_data = build_quiz_from_summary(
+                    {
+                        "insight_attribution": merged_attr,
+                        "key_takeaways": key_takeaways,
+                        "key_quotes": key_quotes,
+                    },
                     count=8,
                     lang=lang,
-                    difficulty_profile=difficulty_profile,
-                    cognitive_targets=cognitive_targets,
                 )
+                # Last-resort transcript fallback only if summary had nothing usable.
+                if _is_low_quality_quiz(quiz_data):
+                    print("Summary fallback thin; using transcript fallback.")
+                    quiz_data = build_quiz_from_transcript(
+                        transcript_data.get("segments", []),
+                        speaker_map=episode.speaker_map or {},
+                        count=8,
+                        lang=lang,
+                        difficulty_profile=difficulty_profile,
+                        cognitive_targets=cognitive_targets,
+                    )
             for q in quiz_data:
                 # Validate that q is a dict
                 if not isinstance(q, dict):
