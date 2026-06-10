@@ -7,9 +7,6 @@ import {
   ArrowRight,
   Link as LinkIcon,
   Globe,
-  MessageSquare,
-  Zap,
-  History,
   Sparkles,
   Settings,
   ChevronDown,
@@ -25,9 +22,9 @@ export default function NeuralIngestHome() {
   const router = useRouter();
   const [url, setUrl] = useState('');
   const [language, setLanguage] = useState('en');
-  const [summaryType, setSummaryType] = useState('default');
   const [isIngesting, setIsIngesting] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
+  const [ingestError, setIngestError] = useState<string | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -40,15 +37,22 @@ export default function NeuralIngestHome() {
     e.preventDefault();
     if (!url) return;
     setIsIngesting(true);
+    setIngestError(null);
     try {
       const res = await api.post('/v1/episodes/ingest', {
         url,
         preferred_lang: language,
-        summary_type: summaryType
+        summary_type: 'default'
       });
       router.push(`/episode/${res.data.id}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Ingestion failed', error);
+      const detail = error?.response?.data?.detail || error?.response?.data?.error?.message;
+      setIngestError(
+        typeof detail === 'string'
+          ? detail
+          : 'Something went wrong while ingesting. Check the link and try again.'
+      );
     } finally {
       setIsIngesting(false);
     }
@@ -139,6 +143,20 @@ export default function NeuralIngestHome() {
             </form>
           </motion.div>
 
+          {/* Ingest error */}
+          <AnimatePresence>
+            {ingestError && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mx-auto max-w-2xl px-5 py-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm leading-relaxed text-center"
+              >
+                {ingestError}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Advanced Configuration */}
           <motion.div
             initial={{ opacity: 0 }}
@@ -183,24 +201,6 @@ export default function NeuralIngestHome() {
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-2">
-                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2">Intelligence Persona</label>
-                    <div className="flex bg-white/5 border border-white/10 rounded-2xl p-1">
-                      {[
-                        { id: 'default', label: 'Standard', icon: <MessageSquare size={14} /> },
-                        { id: 'technical', label: 'Technical', icon: <Cpu size={14} /> },
-                        { id: 'executive', label: 'Executive', icon: <Zap size={14} /> }
-                      ].map(type => (
-                        <button
-                          key={type.id}
-                          onClick={() => setSummaryType(type.id)}
-                          className={`px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 ${summaryType === type.id ? 'bg-white/10 text-blue-400' : 'text-gray-500 hover:text-white'}`}
-                        >
-                          {type.icon} {type.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                 </motion.div>
               )}
             </AnimatePresence>

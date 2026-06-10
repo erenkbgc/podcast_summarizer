@@ -99,7 +99,14 @@ async def ingest_podcast(
     # 1. Resolve source
     audio_url, metadata = SourceResolver.resolve(payload.url)
     if not audio_url:
-        raise HTTPException(status_code=400, detail="Could not resolve podcast source.")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Couldn't locate this episode's audio in public podcast directories. "
+                "It may be Spotify-exclusive or very new. Try the episode's Apple Podcasts "
+                "link or the show's RSS feed instead."
+            ),
+        )
 
     # Compute a stable source key (use resolved audio_url if available)
     def _normalize_url(url: str) -> str:

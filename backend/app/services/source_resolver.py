@@ -132,36 +132,123 @@ class SourceResolver:
         return None, None
 
     @staticmethod
+    def _simplify_title(title: str) -> str:
+        """Strip subtitle decorations that break directory search
+        (e.g. 'Topic — with Guest Name | Show #123' -> 'Topic')."""
+        t = title or ""
+        for sep in [" — ", " – ", " | ", " - Ep", " (Ep", " with ", " w/ "]:
+            if sep in t:
+                t = t.split(sep)[0]
+        return t.strip()
+
+    @staticmethod
+    def _itunes_get(params: dict) -> dict:
+        # Always go through `params=` so spaces/em-dashes/diacritics are encoded.
+        resp = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
+        try:
+            return resp.json()
+        except Exception:
+            return {"resultCount": 0, "results": []}
+
+    @staticmethod
+    def _title_tokens(t: str) -> set:
+        return {w for w in re.findall(r"[a-z0-9çğıöşü]+", (t or "").lower()) if len(w) > 2}
+
+    @staticmethod
+    def _titles_match(requested: str, found: str, threshold: float = 0.5) -> bool:
+        """Guard against the directory returning a DIFFERENT episode of the
+        same show — silently summarizing the wrong episode is worse than 404."""
+        want = SourceResolver._title_tokens(requested)
+        got = SourceResolver._title_tokens(found)
+        if not want or not got:
+            return False
+        return len(want & got) / len(want) >= threshold
+
+    @staticmethod
     def _search_itunes(episode_title: str, show_name: str) -> Tuple[Optional[str], Optional[dict]]:
         # Strategy 1: Search by show + title
         search_query = f"{show_name} {episode_title}"
         print(f"Searching iTunes (Strategy 1): {search_query}")
-        response = requests.get(f"https://itunes.apple.com/search?term={search_query}&entity=podcastEpisode&limit=1")
-        data = response.json()
-        
-        if data["resultCount"] > 0:
-            episode = data["results"][0]
-            print(f"Found on iTunes (S1): {episode.get('trackName')}")
-            return SourceResolver._format_itunes_result(episode)
+        data = SourceResolver._itunes_get({"term": search_query, "entity": "podcastEpisode", "limit": 1})
 
-        # Strategy 2: Search by title only
-        print(f"Searching iTunes (Strategy 2): {episode_title}")
-        response = requests.get(f"https://itunes.apple.com/search?term={episode_title}&entity=podcastEpisode&limit=3")
-        data = response.json()
-        
         if data["resultCount"] > 0:
-            # Try to find a result that matches the show name if possible
-            for episode in data["results"]:
-                if show_name.lower() in episode.get("collectionName", "").lower():
-                    print(f"Found on iTunes (S2 - Match): {episode.get('trackName')}")
-                    return SourceResolver._format_itunes_result(episode)
-            
-            # If no match but we found something, take the first one as a gamble
             episode = data["results"][0]
-            print(f"Found on iTunes (S2 - First): {episode.get('trackName')}")
-            return SourceResolver._format_itunes_result(episode)
-        
+            if SourceResolver._titles_match(episode_title, episode.get("trackName", "")):
+                print(f"Found on iTunes (S1): {episode.get('trackName')}")
+                return SourceResolver._format_itunes_result(episode)
+            print(f"S1 result rejected (title mismatch): {episode.get('trackName')}")
+
+        # Strategy 2: Search by title only (then by simplified title)
+        for attempt_title in dict.fromkeys([episode_title, SourceResolver._simplify_title(episode_title)]):
+            if not attempt_title:
+                continue
+            print(f"Searching iTunes (Strategy 2): {attempt_title}")
+            data = SourceResolver._itunes_get({"term": attempt_title, "entity": "podcastEpisode", "limit": 5})
+            for episode in data.get("results", []):
+                if SourceResolver._titles_match(episode_title, episode.get("trackName", "")):
+                    print(f"Found on iTunes (S2): {episode.get('trackName')}")
+                    return SourceResolver._format_itunes_result(episode)
+            if data.get("resultCount", 0) > 0:
+                print("S2 results rejected (no title match)")
+
+        # Strategy 3: Find the SHOW on iTunes, then locate the episode inside its
+        # RSS feed (most reliable when episode-level search misses).
+        audio, meta = SourceResolver._resolve_via_show_feed(show_name, episode_title)
+        if audio:
+            return audio, meta
+
         print("No results found on iTunes")
+        return None, None
+
+    @staticmethod
+    def _resolve_via_show_feed(show_name: str, episode_title: str) -> Tuple[Optional[str], Optional[dict]]:
+        if not show_name or show_name.lower() in {"podcast", "unknown"}:
+            return None, None
+        print(f"Searching iTunes (Strategy 3 - show feed): {show_name}")
+        data = SourceResolver._itunes_get({"term": show_name, "entity": "podcast", "limit": 3})
+        if data.get("resultCount", 0) == 0:
+            return None, None
+
+        def _tokens(t: str) -> set:
+            return {w for w in re.findall(r"[a-z0-9çğıöşü]+", (t or "").lower()) if len(w) > 2}
+
+        want = _tokens(episode_title)
+        if not want:
+            return None, None
+
+        for show in data["results"]:
+            feed_url = show.get("feedUrl")
+            if not feed_url:
+                continue
+            try:
+                feed = feedparser.parse(feed_url)
+            except Exception:
+                continue
+            best, best_score = None, 0.0
+            for entry in feed.entries[:200]:
+                score_tokens = _tokens(getattr(entry, "title", ""))
+                if not score_tokens:
+                    continue
+                score = len(want & score_tokens) / max(1, len(want))
+                if score > best_score:
+                    best, best_score = entry, score
+            if best is not None and best_score >= 0.5:
+                audio_href = None
+                for link in getattr(best, "links", []):
+                    if getattr(link, "type", "").startswith("audio/"):
+                        audio_href = link.href
+                        break
+                if not audio_href and getattr(best, "enclosures", None):
+                    audio_href = best.enclosures[0].get("href")
+                if audio_href:
+                    print(f"Found via show feed (score {best_score:.2f}): {best.title}")
+                    image = show.get("artworkUrl600") or show.get("artworkUrl100")
+                    return audio_href, {
+                        "title": getattr(best, "title", episode_title),
+                        "show": show.get("collectionName") or show_name,
+                        "image_url": image,
+                        "source_guid": getattr(best, "id", None) or getattr(best, "guid", None),
+                    }
         return None, None
 
     @staticmethod
