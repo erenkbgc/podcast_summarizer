@@ -1,0 +1,140 @@
+91:                </div>
+118:                    </div>
+130:                    </div>
+131:                </div>
+156:                                    </div>
+165:                                </div>
+168:                    </div>
+170:                </div>
+171:            </div>
+306:                    <div className="text-[10px] font-black uppercase tracking-widest text-primary mr-4 hidden md:block">{personaConfig.title}</div>
+323:                    </div>
+324:                </div>
+325:            </div>
+342:                            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t("personaLens")}</div>
+356:                            </div>
+364:                                </div>
+367:                                </div>
+377:                                </div>
+380:                                        <div className="col-span-2">Time</div>
+381:                                        <div className="col-span-8">Moment</div>
+382:                                        <div className="col-span-2 text-right">Signal</div>
+383:                                    </div>
+392:                                            </div>
+395:                                            </div>
+398:                                            </div>
+401:                                </div>
+410:                            </div>
+415:                                    </div>
+420:                                            <div className="text-sm text-foreground/90">{c.claim}</div>
+423:                                            </div>
+436:                                                    </div>
+439:                                        </div>
+446:                                    </div>
+448:                            </div>
+454:                                <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t("actionPlan")}</div>
+455:                                <div className="mt-2 text-2xl font-black text-foreground">{actionCount}</div>
+456:                            </div>
+458:                                <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Core Insights</div>
+459:                                <div className="mt-2 text-2xl font-black text-foreground">{takeawayCount}</div>
+460:                            </div>
+462:                                <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t("openQuestions")}</div>
+463:                                <div className="mt-2 text-2xl font-black text-foreground">{questionCount}</div>
+464:                            </div>
+473:                                </div>
+479:                                            </div>
+483:                                        </div>
+485:                                </div>
+495:                                </div>
+500:                                </div>
+510:                                </div>
+520:                                            </div>
+526:                                </div>
+536:                            </div>
+538:                        </div>
+545:                                </div>
+583:                                </div>
+584:                            </div>
+593:                                </div>
+599:                                            </div>
+601:                                        </div>
+603:                                </div>
+613:                                </div>
+618:                                        </div>
+620:                                </div>
+630:                                </div>
+640:                                            </div>
+646:                                </div>
+662:                        </div>
+667:                                <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t("peakIntensity")}</div>
+670:                                </div>
+673:                                </div>
+674:                            </div>
+676:                                <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t("topTerm")}</div>
+679:                                </div>
+682:                                </div>
+683:                            </div>
+685:                                <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{t("topicBlocks")}</div>
+688:                                </div>
+691:                                </div>
+692:                            </div>
+693:                        </div>
+709:                                        </div>
+735:                                            </div>
+736:                                        </div>
+743:                                                </div>
+745:                                        </div>
+746:                                    </div>
+755:                                    </div>
+779:                                    </div>
+780:                                </div>
+794:                                    </div>
+836:                                                                    <div className="text-[10px] font-black text-primary uppercase mb-1">{formatTime(data.time)}</div>
+839:                                                                    </div>
+840:                                                                </div>
+848:                                    </div>
+853:                                            <div className="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/60">{t("topicBlocks")}</div>
+867:                                                                <div className="text-[9px] font-black text-primary uppercase">{t.topic}</div>
+868:                                                                <div className="text-[8px] text-muted-foreground">{formatTime(t.start)} - {formatTime(t.end)}</div>
+869:                                                            </div>
+870:                                                        </div>
+873:                                            </div>
+874:                                        </div>
+884:                                            </div>
+915:                                            </div>
+916:                                        </div>
+923:                                            </div>
+927:                                        </div>
+937:                                            </div>
+944:                                                </div>
+993:                                            </div>
+994:                                        </div>
+1001:                                            </div>
+1005:                                        </div>
+1015:                                            </div>
+1042:                                                                    <div className="font-bold">{segment.topic}</div>
+1045:                                                                    </div>
+1046:                                                                </div>
+1050:                                                </div>
+1061:                                                        </div>
+1063:                                                </div>
+1064:                                            </div>
+1065:                                        </div>
+1079:                                    </div>
+1090:                                                        </div>
+1092:                                                    </div>
+1094:                                            </div>
+1104:                                            </div>
+1109:                        </div>
+1117:                                            <div className="text-xs font-black uppercase tracking-widest text-muted-foreground">Claim</div>
+1118:                                            <div className="mt-2 text-sm text-foreground/90">{selectedClaim?.claim}</div>
+1119:                                        </div>
+1126:                                    </div>
+1131:                                            </div>
+1135:                                                <div className="text-sm font-semibold">{s.title || "Source"}</div>
+1136:                                                {s.snippet && <div className="text-xs text-muted-foreground mt-1">{s.snippet}</div>}
+1147:                                            </div>
+1149:                                    </div>
+1150:                                </div>
+1151:                            </div>
+1153:                    </div>

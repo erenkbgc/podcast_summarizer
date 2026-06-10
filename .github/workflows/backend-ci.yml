@@ -1,0 +1,23 @@
+name: Backend CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  docker-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build test image
+        run: |
+          docker compose build api-test
+
+      - name: Run backend tests in Docker
+        env:
+          SECRET_KEY: test-secret-key
+        run: |
+          docker compose run --rm api-test
