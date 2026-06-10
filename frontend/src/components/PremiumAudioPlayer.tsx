@@ -47,20 +47,34 @@ export function PremiumAudioPlayer({
     const [volume, setVolume] = useState(0.8);
     const [playbackRate, setPlaybackRate] = useState(1);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+    const [isWaveReady, setIsWaveReady] = useState(false);
     const lastSyncTime = useRef(currentTime);
 
-    // Initialize WaveSurfer (lazy-loaded on demand)
+    // Keep latest callbacks in refs so the WaveSurfer instance is created
+    // exactly once per audioUrl. Parent components recreate these handlers on
+    // every render; putting them in the effect deps used to destroy and
+    // re-create the player every second, breaking playback and transcript sync.
+    const callbacksRef = useRef({ onTimeUpdate, onDurationChange, onSeek });
+    useEffect(() => {
+        callbacksRef.current = { onTimeUpdate, onDurationChange, onSeek };
+    });
+
+    // Initialize WaveSurfer (lazy-loaded, once per audio source)
     useEffect(() => {
         if (!waveContainerRef.current) return;
+        let cancelled = false;
+        setIsWaveReady(false);
+        lastSyncTime.current = 0;
 
         const initWaveSurfer = async () => {
             const WaveSurferModule = await import("wavesurfer.js");
+            if (cancelled || !waveContainerRef.current) return;
             const WaveSurfer = WaveSurferModule.default;
 
-            wavesurfer.current = WaveSurfer.create({
-                container: waveContainerRef.current!,
+            const ws = WaveSurfer.create({
+                container: waveContainerRef.current,
                 waveColor: "rgba(255, 255, 255, 0.1)",
-                progressColor: "#3E5BFF", // Primary color
+                progressColor: "#3E5BFF",
                 cursorColor: "#3E5BFF",
                 barWidth: 2,
                 barRadius: 3,
@@ -68,39 +82,43 @@ export function PremiumAudioPlayer({
                 barGap: 3,
                 url: audioUrl,
             });
+            wavesurfer.current = ws;
 
-            wavesurfer.current.on('timeupdate', (time) => {
-                if (Math.abs(time - lastSyncTime.current) >= 1) {
-                    onTimeUpdate(time);
+            ws.on("timeupdate", (time) => {
+                if (Math.abs(time - lastSyncTime.current) >= 0.4) {
+                    callbacksRef.current.onTimeUpdate(time);
                     lastSyncTime.current = time;
                 }
             });
 
-            wavesurfer.current.on('ready', (dur) => {
-                onDurationChange(dur);
+            ws.on("ready", (dur) => {
+                setIsWaveReady(true);
+                callbacksRef.current.onDurationChange(dur);
             });
 
-            wavesurfer.current.on('interaction', (newTime) => {
-                onSeek(newTime);
+            ws.on("interaction", (newTime) => {
+                callbacksRef.current.onSeek(newTime);
             });
         };
 
         initWaveSurfer();
 
         return () => {
+            cancelled = true;
             wavesurfer.current?.destroy();
+            wavesurfer.current = null;
         };
-    }, [audioUrl, onTimeUpdate, onDurationChange, onSeek]);
+    }, [audioUrl]);
 
-    // Sync isPlaying
+    // Sync isPlaying (only once the waveform is ready, so play() can't race init)
     useEffect(() => {
-        if (!wavesurfer.current) return;
+        if (!wavesurfer.current || !isWaveReady) return;
         if (isPlaying) {
             wavesurfer.current.play();
         } else {
             wavesurfer.current.pause();
         }
-    }, [isPlaying]);
+    }, [isPlaying, isWaveReady]);
 
     // Sync volume
     useEffect(() => {

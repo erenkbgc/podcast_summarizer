@@ -2,10 +2,11 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getKnowledgeOverview, getUniversalGlossary, GlossaryItem, KnowledgeEpisodeOverview } from '@/lib/api';
-import { BookOpen, Search, Info, MessageSquareQuote, Sparkles, Quote } from 'lucide-react';
+import { BookOpen, Search, Info, MessageSquareQuote, Sparkles, Quote, Network } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Sidebar } from '@/components/Sidebar';
+import Link from 'next/link';
 
 
 export default function KnowledgePage() {
@@ -72,12 +73,21 @@ export default function KnowledgePage() {
                                 className="w-full h-11 pl-12 pr-4 bg-secondary/20 border border-white/5 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 text-sm transition-all"
                             />
                         </div>
-                        <button
-                            onClick={() => setRebuildToken(Date.now())}
-                            className="h-11 px-4 rounded-xl bg-primary text-white text-xs font-bold tracking-widest uppercase shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all"
-                        >
-                            {isLoading ? "Generating..." : "Generate Knowledge"}
-                        </button>
+                        <div className="flex items-center gap-3">
+                            <Link
+                                href="/knowledge/graph"
+                                className="h-11 px-4 rounded-xl border border-primary/30 bg-primary/10 text-primary text-xs font-bold tracking-widest uppercase hover:bg-primary/20 transition-all flex items-center gap-2"
+                            >
+                                <Network size={14} />
+                                Graph View
+                            </Link>
+                            <button
+                                onClick={() => setRebuildToken(Date.now())}
+                                className="h-11 px-4 rounded-xl bg-primary text-white text-xs font-bold tracking-widest uppercase shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all"
+                            >
+                                {isLoading ? "Generating..." : "Generate Knowledge"}
+                            </button>
+                        </div>
                     </div>
                 </header>
 

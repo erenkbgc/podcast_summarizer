@@ -457,15 +457,37 @@ class LLMClient:
             "action_items": ["Review transcript manually", "Retry synthesis with different parameters"],
         }
 
+    def _unwrap_object_list(self, obj: Any) -> List[Any]:
+        """Coerce an object-wrapped list into a list.
+
+        Ollama's format=json constrains output to a single JSON object, so
+        models return {"items": [...]}, {"Q1": {...}, "Q2": {...}} or even a
+        bare single item instead of an array. Handle all of these so every
+        list-based extraction (glossary, entities, tags, quiz) keeps working.
+        """
+        if not isinstance(obj, dict):
+            return []
+        listish = next((v for v in obj.values() if isinstance(v, list)), None)
+        if listish is not None:
+            return listish
+        dict_values = [v for v in obj.values() if isinstance(v, dict)]
+        if dict_values:
+            return dict_values
+        return [obj] if obj else []
+
     def _parse_json_list(self, response: str) -> List[Any]:
         if not response:
             return []
-            
+
         cleaned = self._clean_json_string(response)
-        
+
         try:
             data = json.loads(cleaned)
-            return data if isinstance(data, list) else []
+            if isinstance(data, list):
+                return data
+            unwrapped = self._unwrap_object_list(data)
+            if unwrapped:
+                return unwrapped
         except Exception:
             pass
 
@@ -473,11 +495,21 @@ class LLMClient:
             start = cleaned.find("[")
             end = cleaned.rfind("]") + 1
             if start != -1 and end > start:
-                json_str = cleaned[start:end]
-                data = json.loads(json_str)
-                return data if isinstance(data, list) else []
+                data = json.loads(cleaned[start:end])
+                if isinstance(data, list):
+                    return data
         except Exception as e:
             logger.error(f"JSON list parse fallback failed: {e}. Raw: {cleaned[:100]}...")
+
+        try:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}") + 1
+            if start != -1 and end > start:
+                unwrapped = self._unwrap_object_list(json.loads(cleaned[start:end]))
+                if unwrapped:
+                    return unwrapped
+        except Exception:
+            pass
 
         return []
 
@@ -943,7 +975,7 @@ class LLMClient:
 
         prompt = (
             f"Extract 10-20 key entities (person, org, product, concept) from the text. Respond in {self._get_lang_name(lang)}. "
-            'JSON list of objects: {"name": str, "type": str}.\n\n'
+            'Return ONLY a JSON object: {"items": [{"name": str, "type": str}, ...]}.\n\n'
             f"TEXT:\n{formatted_text}\n\nJSON:"
         )
         return self._parse_json_list(self.chat([{"role": "user", "content": prompt}], format="json", metadata={"task": "extract_entities"}))
@@ -957,7 +989,7 @@ class LLMClient:
             "Categorize this podcast with EXACTLY 3 highly relevant tags and their broader groups "
             "(example: label:'Bitcoin', group:'finance'). "
             f"Respond in {self._get_lang_name(lang)}. "
-            'JSON list of exactly 3 objects: {"label": str, "group": str}.\n\n'
+            'Return ONLY a JSON object: {"items": [{"label": str, "group": str}, {"label": str, "group": str}, {"label": str, "group": str}]}.\n\n'
             f"TEXT:\n{formatted_text}\n\nJSON:"
         )
         return self._parse_json_list(self.chat([{"role": "user", "content": prompt}], format="json", metadata={"task": "extract_podcast_tags"}))
@@ -1031,9 +1063,9 @@ class LLMClient:
             f"7) ALL generated text MUST be in {full_lang}.\n\n"
             f"Difficulty target: {json.dumps(difficulty_profile)}\n"
             f"Cognitive targets (Bloom's taxonomy): {', '.join(cognitive_targets)}\n\n"
-            "JSON STRUCTURE (Array of objects):\n"
-            '[{"question": str, "options": [4 strings], "correct_answer": int (0-3), "explanation": str, "source_start": float, '
-            '"difficulty": "easy|medium|hard", "cognitive_level": "remember|understand|apply|analyze|evaluate|create", "question_type": str}]\n\n'
+            "JSON STRUCTURE — return ONE object with an 'items' array:\n"
+            '{"items": [{"question": str, "options": [4 strings], "correct_answer": int (0-3), "explanation": str, "source_start": float, '
+            '"difficulty": "easy|medium|hard", "cognitive_level": "remember|understand|apply|analyze|evaluate|create", "question_type": str}, ...]}\n\n'
             f"TEXT DATA:\n{formatted_text}\n\nJSON:"
         )
         quiz_messages = [
@@ -1104,8 +1136,8 @@ class LLMClient:
         full_lang = self._get_lang_name(lang)
         prompt = (
             f"Extract 8-15 important domain terms from this transcript and define them in {full_lang}.\n"
-            "Return ONLY JSON list with objects:\n"
-            '{"term": "string", "definition": "string", "context_sentence": "string"}\n\n'
+            "Return ONLY a JSON object with an 'items' array:\n"
+            '{"items": [{"term": "string", "definition": "string", "context_sentence": "string"}, ...]}\n\n'
             f"TEXT:\n{text}\n\nJSON:"
         )
         return self._parse_json_list(

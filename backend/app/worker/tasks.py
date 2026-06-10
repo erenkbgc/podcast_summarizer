@@ -900,7 +900,7 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 # Build EpisodeEntity with timestamps + mention counts
                 segments = transcript_data.get("segments", [])
                 for ent in entity_rows:
-                    pattern = re.compile(rf"\\b{re.escape(ent.name)}\\b", re.IGNORECASE)
+                    pattern = re.compile(rf"\b{re.escape(ent.name)}\b", re.IGNORECASE)
                     mention_count = 0
                     first_ts = None
                     last_ts = None
