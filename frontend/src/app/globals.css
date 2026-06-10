@@ -129,3 +129,37 @@ h6 {
   transform: translateY(-4px);
   box-shadow: 0 12px 24px -8px rgba(0, 0, 0, 0.5);
 }
+/* ---- Print / PDF export of the summary dashboard ---- */
+@media print {
+  /* Hide app chrome: sidebar, headers, player, tab bar, intelligence panel */
+  aside,
+  header,
+  .print\:hidden {
+    display: none !important;
+  }
+  /* Force a clean light document */
+  html, body {
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+  #summary-print-root {
+    overflow: visible !important;
+    height: auto !important;
+    background: #ffffff !important;
+  }
+  #summary-print-root .bg-card,
+  #summary-print-root .bg-background {
+    background: #ffffff !important;
+    border-color: #e5e5e5 !important;
+  }
+  #summary-print-root,
+  #summary-print-root * {
+    color: #111111 !important;
+  }
+  /* Reveal every tab section for a complete printed document */
+  #summary-print-root [data-print-all] {
+    display: block !important;
+  }
+  main { overflow: visible !important; }
+  @page { margin: 1.6cm; }
+}

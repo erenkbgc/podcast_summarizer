@@ -89,40 +89,81 @@ def backfill(episode_ids):
                     db.refresh(existing)
                 rows.append(existing)
 
+            # Per-segment presence -> mention counts + true co-occurrence edges.
+            patterns = {e.id: re.compile(rf"\b{re.escape(e.name)}\b", re.IGNORECASE) for e in rows}
+            seg_sets, stats = [], {eid2: {"count": 0, "first": None, "last": None} for eid2 in patterns}
+            for seg in segments:
+                t = seg.get("text", "") or ""
+                present = set()
+                for ent_id, pat in patterns.items():
+                    if t and pat.search(t):
+                        present.add(ent_id)
+                        s = stats[ent_id]
+                        s["count"] += 1
+                        if s["first"] is None:
+                            s["first"] = seg.get("start")
+                        s["last"] = seg.get("end")
+                seg_sets.append(present)
+
             for ent in rows:
-                pattern = re.compile(rf"\b{re.escape(ent.name)}\b", re.IGNORECASE)
-                count, first_ts, last_ts = 0, None, None
-                for seg in segments:
-                    t = seg.get("text", "")
-                    if t and pattern.search(t):
-                        count += 1
-                        if first_ts is None:
-                            first_ts = seg.get("start")
-                        last_ts = seg.get("end")
+                s = stats[ent.id]
                 db.add(EpisodeEntity(
                     episode_id=eid, entity_id=ent.id,
-                    mention_count=max(1, count), first_ts=first_ts, last_ts=last_ts,
+                    mention_count=max(1, s["count"]), first_ts=s["first"], last_ts=s["last"],
                 ))
             db.commit()
 
-            links = (db.query(EpisodeEntity)
-                     .filter(EpisodeEntity.episode_id == eid)
-                     .order_by(EpisodeEntity.mention_count.desc())
-                     .limit(12).all())
-            for i in range(len(links)):
-                for j in range(i + 1, len(links)):
-                    db.add(EntityRelation(
-                        episode_id=eid,
-                        source_entity_id=links[i].entity_id,
-                        target_entity_id=links[j].entity_id,
-                        relation_type="co_mentioned",
-                        weight=min(links[i].mention_count, links[j].mention_count),
-                    ))
+            from itertools import combinations
+            WINDOW = 5
+            pair_weights = {}
+            for i in range(len(seg_sets)):
+                union = set()
+                for j in range(i, min(i + WINDOW, len(seg_sets))):
+                    union |= seg_sets[j]
+                for a, b in combinations(sorted(union), 2):
+                    pair_weights[(a, b)] = pair_weights.get((a, b), 0) + 1
+            edges = 0
+            for (a, b), w in pair_weights.items():
+                if w < 2:
+                    continue
+                for s_id, t_id in ((a, b), (b, a)):
+                    db.add(EntityRelation(episode_id=eid, source_entity_id=s_id,
+                                          target_entity_id=t_id, relation_type="co_mentioned", weight=w))
+                edges += 1
             db.commit()
-            print(f"[{eid}] entities: {len(rows)}, relations built")
+            print(f"[{eid}] entities: {len(rows)}, co-occurrence edges: {edges}")
         except Exception as e:
             db.rollback()
             print(f"[{eid}] entities FAILED: {e}")
+
+        # ---- Speaker names + contribution ----
+        try:
+            speaker_map = llm.identify_speakers(tr.full_text or "")
+            ep.speaker_map = speaker_map
+
+            # Recompute speaker_contribution from real diarized durations,
+            # mapped through the speaker_map to display names (%).
+            from app.models.podcast import Summary as _Summary
+            durations: dict = {}
+            for seg in segments:
+                spk = seg.get("speaker")
+                if not spk:
+                    continue
+                dur = float(seg.get("end", 0) or 0) - float(seg.get("start", 0) or 0)
+                if dur > 0:
+                    name = (speaker_map or {}).get(spk, spk)
+                    durations[name] = durations.get(name, 0.0) + dur
+            total = sum(durations.values())
+            contribution = {k: round(v / total * 100, 1) for k, v in durations.items()} if total else {}
+            summ = db.query(_Summary).filter(_Summary.episode_id == eid).first()
+            if summ and contribution:
+                summ.speaker_contribution = contribution
+            db.commit()
+            named = sum(1 for v in (speaker_map or {}).values() if not str(v).startswith("Speaker "))
+            print(f"[{eid}] speakers: {len(speaker_map or {})} labels, {named} named; contribution {len(contribution)} -> {speaker_map}")
+        except Exception as e:
+            db.rollback()
+            print(f"[{eid}] speakers FAILED: {e}")
 
     db.close()
 

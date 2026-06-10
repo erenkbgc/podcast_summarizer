@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from sqlalchemy import func
+import json as _json
 from app.models.podcast import Episode, Glossary, Entity, EpisodeEntity, EntityRelation, Transcript
 from app.schemas.podcast import SearchResult, GlossaryRead, ActivityMessage, EntityRead, EntityTimelineItem, EntityRelationRead, KnowledgeEpisodeOverview
 from app.services.llm_client import LLMClient
@@ -291,24 +294,32 @@ def get_full_knowledge_graph(db: Session = Depends(get_db), current_user: UserDB
         .all()
     )
 
-    nodes = [
-        {
-            "id": e.id,
-            "label": e.name,
-            "type": e.type,
-            "mentions": int(e.total_mentions or 0)
-        }
-        for e in entities
-    ]
+    # Relations are stored bidirectionally and per-episode. Collapse to
+    # undirected edges, summing weight across directions/episodes, and prune
+    # weak edges so the graph is sparse and legible.
+    undirected: dict = {}
+    for r in relations:
+        a, b = sorted((r.source_entity_id, r.target_entity_id))
+        if a == b:
+            continue
+        undirected[(a, b)] = undirected.get((a, b), 0) + int(r.weight or 1)
 
     links = [
-        {
-            "source": r.source_entity_id,
-            "target": r.target_entity_id,
-            "weight": r.weight
-        }
-        for r in relations
+        {"source": a, "target": b, "weight": w}
+        for (a, b), w in undirected.items()
+        if w >= 2
     ]
+
+    # Drop orphan nodes (no surviving edge) to remove clutter — but if pruning
+    # would empty the graph, keep the top entities so the page isn't blank.
+    connected = {l["source"] for l in links} | {l["target"] for l in links}
+    all_nodes = [
+        {"id": e.id, "label": e.name, "type": e.type, "mentions": int(e.total_mentions or 0)}
+        for e in entities
+    ]
+    nodes = [n for n in all_nodes if n["id"] in connected] if links else all_nodes
+    if not nodes:
+        nodes = all_nodes
 
     return {
         "nodes": nodes,
@@ -319,3 +330,37 @@ def get_full_knowledge_graph(db: Session = Depends(get_db), current_user: UserDB
             "user_id": user_id
         }
     }
+
+
+class AskRequest(BaseModel):
+    message: str
+    lang: str | None = None
+
+
+@router.post("/ask/stream")
+def ask_library_stream(
+    payload: AskRequest,
+    db: Session = Depends(get_db),
+    current_user: UserDBModel = Depends(get_current_user),
+):
+    """Stream a library-wide chat answer (SSE). Searches across all of the
+    user's completed episodes and cites episode + timestamp."""
+    from app.services.chat import ChatService
+
+    def event_generator():
+        try:
+            chat_service = ChatService(db)
+            for ev in chat_service.process_library_stream(
+                user_id=current_user.id, message=payload.message, lang=payload.lang
+            ):
+                yield f"data: {_json.dumps(ev)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            print(f"Library ask error: {e}")
+            yield f"data: {_json.dumps({'type': 'error', 'message': 'Ask failed'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )

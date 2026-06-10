@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -279,10 +280,29 @@ class LLMClient:
         if format:
             payload["format"] = format
 
+        if stream:
+            # Return a generator of text deltas parsed from Ollama's
+            # newline-delimited JSON stream. (Previously the raw Response was
+            # returned, so callers iterated over bytes and crashed.)
+            def _token_gen():
+                resp = requests.post(url, json=payload, stream=True, timeout=self.timeout)
+                resp.raise_for_status()
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except Exception:
+                        continue
+                    delta = (data.get("message") or {}).get("content", "")
+                    if delta:
+                        yield delta
+                    if data.get("done"):
+                        break
+            return _token_gen()
+
         response = requests.post(url, json=payload, timeout=self.timeout)
         response.raise_for_status()
-        if stream:
-            return response
         return response.json()["message"]["content"]
 
     def _call_openai(self, messages: List[Dict[str, str]], model: str, format: str = "") -> str:
@@ -354,12 +374,14 @@ class LLMClient:
     def _dispatch(self, provider: str, model: str, messages: List[Dict[str, str]], stream: bool, format: str) -> Any:
         provider = (provider or "ollama").lower()
         if provider == "openai":
+            # OpenAI streaming not implemented — degrade gracefully to a
+            # single-chunk generator so the stream path never crashes.
             if stream:
-                raise RuntimeError("stream is only supported with ollama in current implementation")
+                return iter([self._call_openai(messages=messages, model=model, format=format)])
             return self._call_openai(messages=messages, model=model, format=format)
         if provider == "anthropic":
             if stream:
-                raise RuntimeError("stream is only supported with ollama in current implementation")
+                return iter([self._call_anthropic(messages=messages, model=model, format=format)])
             return self._call_anthropic(messages=messages, model=model, format=format)
         return self._call_ollama(messages=messages, model=model, stream=stream, format=format)
 
@@ -959,23 +981,71 @@ class LLMClient:
         return all_chapters
 
     def identify_speakers(self, transcript_text: str) -> Dict[str, str]:
-        prompt = (
-            "Analyze this transcript and identify speaker names from introductions or mentions.\n"
-            'Return JSON: {"SPEAKER_XX": "Name"}.\n\n'
-            f"TRANSCRIPT:\n{transcript_text[:12000]}\n\nJSON:"
-        )
-        try:
-            return self._parse_json_object(self.chat([{"role": "user", "content": prompt}], format="json", metadata={"task": "identify_speakers"}))
-        except Exception:
+        """Map diarized labels (SPEAKER_00, ...) to real names or roles.
+
+        Returns {label: display_name}. Falls back to readable role labels
+        ("Host", "Guest 1") when a real name can't be confidently inferred,
+        so the UI never shows raw SPEAKER_00 strings.
+        """
+        labels = sorted(set(re.findall(r"SPEAKER_\d+", transcript_text or "")))
+        if not labels:
             return {}
 
+        prompt = (
+            "You are analyzing a podcast transcript whose turns are tagged with diarized speaker labels.\n"
+            f"The distinct labels present are: {', '.join(labels)}.\n\n"
+            "From introductions, self-references, hand-offs and how people are addressed, infer each speaker.\n"
+            "Rules:\n"
+            "- Use a real name ONLY when the transcript makes it reasonably clear (e.g. 'I'm Victoria Craig').\n"
+            "- If a real name is unclear, use a descriptive role instead: 'Host', 'Co-host', 'Guest', 'Reporter', 'Analyst'.\n"
+            "- Never invent specific names that aren't supported by the text.\n"
+            "- Return EVERY label exactly once.\n\n"
+            'Return ONLY JSON: {"items": [{"id": "SPEAKER_00", "name": "Victoria Craig", "role": "Host"}, ...]}.\n\n'
+            f"TRANSCRIPT (excerpt):\n{(transcript_text or '')[:14000]}\n\nJSON:"
+        )
+        try:
+            items = self._parse_json_list(
+                self.chat([{"role": "user", "content": prompt}], format="json", metadata={"task": "identify_speakers"})
+            )
+        except Exception:
+            items = []
+
+        mapping: Dict[str, str] = {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            sid = str(it.get("id") or "").strip()
+            if not sid or sid not in labels:
+                continue
+            name = str(it.get("name") or "").strip()
+            role = str(it.get("role") or "").strip()
+            # Prefer a concrete name; reject placeholders so they fall back to role.
+            bad = {"UNKNOWN", "N/A", "", "SPEAKER", "HOST", "GUEST", "CO-HOST", "REPORTER", "ANALYST"}
+            display = name if name and name.upper() not in bad else (role or name)
+            if display:
+                mapping[sid] = display
+
+        # Ensure every label has a friendly fallback (1-indexed).
+        for idx, label in enumerate(labels, start=1):
+            mapping.setdefault(label, f"Speaker {idx}")
+        return mapping
+
     def extract_entities(self, transcript_segments: List[Dict[str, Any]], lang: str = "en") -> List[Dict[str, Any]]:
-        sampled = transcript_segments[::4]
-        formatted_text = "\n".join([s.get("text", "") for s in sampled])
+        # Use importance-scored sampling rather than every-4th-segment, so we
+        # surface the substantive parts of the conversation.
+        sampled = self.optimize_context_segments(transcript_segments, keep_ratio=0.6) or transcript_segments[::3]
+        formatted_text = "\n".join([s.get("text", "") for s in sampled])[:14000]
 
         prompt = (
-            f"Extract 10-20 key entities (person, org, product, concept) from the text. Respond in {self._get_lang_name(lang)}. "
-            'Return ONLY a JSON object: {"items": [{"name": str, "type": str}, ...]}.\n\n'
+            f"Extract the SPECIFIC, notable entities discussed in this transcript. Respond in {self._get_lang_name(lang)}.\n\n"
+            "INCLUDE: named people, named organizations/companies, named products/technologies, "
+            "named places only if they are central actors, and SPECIFIC concepts/theories/events "
+            "(e.g. 'Pillar Two tax deal', 'digital services tax', 'exponential nuclear expansion').\n"
+            "EXCLUDE generic or ubiquitous words that carry little meaning on their own "
+            "(e.g. 'market', 'policy', 'business', 'people', 'world', 'money', 'government', "
+            "and bare country names like 'US'/'China' UNLESS the discussion is specifically about that country).\n"
+            "Aim for 8-15 high-signal entities. For each, give a 4-8 word descriptor of its role in THIS episode.\n\n"
+            'Return ONLY a JSON object: {"items": [{"name": str, "type": "person|org|product|concept", "descriptor": str}, ...]}.\n\n'
             f"TEXT:\n{formatted_text}\n\nJSON:"
         )
         return self._parse_json_list(self.chat([{"role": "user", "content": prompt}], format="json", metadata={"task": "extract_entities"}))

@@ -14,7 +14,9 @@ import {
     LogOut,
     Zap,
     History,
-    User
+    User,
+    MessageSquare,
+    GraduationCap
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
@@ -29,8 +31,10 @@ export function Sidebar() {
     const navItems = [
         { name: "Synthesize", icon: Zap, href: "/" },
         { name: "Library", icon: Library, href: "/library" },
+        { name: "Ask Library", icon: MessageSquare, href: "/ask" },
         { name: "Global Search", icon: Search, href: "/search" },
         { name: "Knowledge Vault", icon: BookOpen, href: "/knowledge" },
+        { name: "Study Deck", icon: GraduationCap, href: "/study" },
         { name: "Thinking History", icon: Activity, href: "/activity" },
     ];
 

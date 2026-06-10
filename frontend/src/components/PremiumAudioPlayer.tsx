@@ -142,11 +142,11 @@ export function PremiumAudioPlayer({
     const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
     return (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-5xl px-4 z-50 pointer-events-none">
+        <div className="shrink-0 border-t border-border bg-card/40 backdrop-blur-2xl px-4 py-3 print:hidden">
             <motion.div
-                initial={{ y: 100, opacity: 0 }}
+                initial={{ y: 30, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
-                className="glass rounded-3xl p-4 shadow-[0_32px_64px_-12px_rgba(0,0,0,0.9)] border border-white/10 flex items-center gap-6 pointer-events-auto bg-black/60 backdrop-blur-2xl"
+                className="max-w-5xl mx-auto flex items-center gap-6"
             >
                 {/* Episode Info */}
                 <div className="flex items-center gap-4 w-72 shrink-0 overflow-hidden">

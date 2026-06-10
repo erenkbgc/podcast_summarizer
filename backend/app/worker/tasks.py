@@ -193,7 +193,8 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 speaker_map = llm.identify_speakers(transcript_data["full_text"])
                 episode.speaker_map = speaker_map
                 db.commit()
-                print(f"Speakers identified: {speaker_map}")
+                named = sum(1 for v in (speaker_map or {}).values() if not str(v).startswith("Speaker "))
+                print(f"Speakers identified: {len(speaker_map or {})} labels, {named} named -> {speaker_map}")
             except Exception as e:
                 print(f"Speaker identification failed: {e}")
 
@@ -897,61 +898,63 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                         db.refresh(existing)
                     entity_rows.append(existing)
 
-                # Build EpisodeEntity with timestamps + mention counts
+                # Single pass: per-segment entity presence (drives both mention
+                # counts and TRUE co-occurrence relations).
                 segments = transcript_data.get("segments", [])
-                for ent in entity_rows:
-                    pattern = re.compile(rf"\b{re.escape(ent.name)}\b", re.IGNORECASE)
-                    mention_count = 0
-                    first_ts = None
-                    last_ts = None
-                    for seg in segments:
-                        seg_text = seg.get("text", "")
-                        if not seg_text:
-                            continue
-                        if pattern.search(seg_text):
-                            mention_count += 1
-                            if first_ts is None:
-                                first_ts = seg.get("start")
-                            last_ts = seg.get("end")
+                patterns = {ent.id: re.compile(rf"\b{re.escape(ent.name)}\b", re.IGNORECASE) for ent in entity_rows}
+                seg_entity_sets: list = []          # set of entity_id present, per segment
+                stats: dict = {eid: {"count": 0, "first": None, "last": None} for eid in patterns}
+                for seg in segments:
+                    seg_text = seg.get("text", "") or ""
+                    present = set()
+                    for eid, pat in patterns.items():
+                        if seg_text and pat.search(seg_text):
+                            present.add(eid)
+                            s = stats[eid]
+                            s["count"] += 1
+                            if s["first"] is None:
+                                s["first"] = seg.get("start")
+                            s["last"] = seg.get("end")
+                    seg_entity_sets.append(present)
 
-                    link = EpisodeEntity(
+                for ent in entity_rows:
+                    s = stats[ent.id]
+                    db.add(EpisodeEntity(
                         episode_id=episode.id,
                         entity_id=ent.id,
-                        mention_count=max(1, mention_count),
-                        first_ts=first_ts,
-                        last_ts=last_ts
-                    )
-                    db.add(link)
+                        mention_count=max(1, s["count"]),
+                        first_ts=s["first"],
+                        last_ts=s["last"],
+                    ))
                 db.commit()
 
-                # Build co-mention relations (top entities only)
-                links = (
-                    db.query(EpisodeEntity)
-                    .filter(EpisodeEntity.episode_id == episode.id)
-                    .order_by(EpisodeEntity.mention_count.desc())
-                    .limit(12)
-                    .all()
-                )
-                for i in range(len(links)):
-                    for j in range(i + 1, len(links)):
-                        src = links[i]
-                        tgt = links[j]
-                        weight = min(src.mention_count, tgt.mention_count)
+                # Co-occurrence: two entities relate if they appear within a small
+                # window of consecutive segments. Weight = number of such windows.
+                from itertools import combinations
+                WINDOW = 5
+                pair_weights: dict = {}
+                for i in range(len(seg_entity_sets)):
+                    window_union = set()
+                    for j in range(i, min(i + WINDOW, len(seg_entity_sets))):
+                        window_union |= seg_entity_sets[j]
+                    for a, b in combinations(sorted(window_union), 2):
+                        pair_weights[(a, b)] = pair_weights.get((a, b), 0) + 1
+
+                edges = 0
+                for (a, b), w in pair_weights.items():
+                    if w < 2:  # prune incidental single-window co-mentions
+                        continue
+                    for src_id, tgt_id in ((a, b), (b, a)):
                         db.add(EntityRelation(
                             episode_id=episode.id,
-                            source_entity_id=src.entity_id,
-                            target_entity_id=tgt.entity_id,
+                            source_entity_id=src_id,
+                            target_entity_id=tgt_id,
                             relation_type="co_mentioned",
-                            weight=weight
+                            weight=w,
                         ))
-                        db.add(EntityRelation(
-                            episode_id=episode.id,
-                            source_entity_id=tgt.entity_id,
-                            target_entity_id=src.entity_id,
-                            relation_type="co_mentioned",
-                            weight=weight
-                        ))
+                    edges += 1
                 db.commit()
+                print(f"Entities: {len(entity_rows)}, co-occurrence edges: {edges}")
         except Exception as e:
             print(f"Entity extraction failed: {e}")
             db.rollback()

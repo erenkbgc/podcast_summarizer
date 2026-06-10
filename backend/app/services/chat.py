@@ -603,27 +603,28 @@ INSTRUCTIONS:
             compressed_context=(compressed_history + "\n" + memory_context).strip(),
         )
 
+        top_cred = max([float(s.get("credibility", 0.0) or 0.0) for s in sources[:3]] + [0.0])
+        thin_context = not context_text or top_cred < 0.35
+        grounding_note = (
+            "CITATION FORMAT: cite with [MM:SS], mention the speaker when known, and prefer the transcript context above."
+            if not thin_context else
+            "The transcript context above is thin or low-confidence. Still give a genuinely helpful answer: "
+            "use the episode title/topic and your general understanding, and note briefly when something isn't "
+            "directly grounded in the transcript. Cite [MM:SS] only when the context actually supports it."
+        )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "system", "content": f"LOCAL VERIFIED RAG CONTEXT:\n{context_text}" if context_text else "No specific transcript context found."},
-            {
-                "role": "system",
-                "content": "CITATION FORMAT: cite with [MM:SS], mention speaker when known, and avoid unsupported claims.",
-            },
+            {"role": "system", "content": grounding_note},
         ]
 
         native_reminders = {"tr": "Lütfen sadece Türkçe cevap ver.", "en": "Please respond only in English."}
         final_msg = f"{message}\n\n(Important: {native_reminders.get(target_lang[:2], 'Respond in ' + target_lang)})"
         messages.append({"role": "user", "content": final_msg})
 
-        top_cred = max([float(s.get("credibility", 0.0) or 0.0) for s in sources[:3]] + [0.0])
-        if not sources or top_cred < 0.2:
-            response = (
-                "I don’t have strong transcript evidence for that question in this episode yet. "
-                "Please ask a narrower question or provide a timestamp range."
-            )
-        else:
-            response = self.llm.chat(messages, metadata={"task": "chat_response", "mode": mode})
+        # Only refuse when there is literally nothing to work with; otherwise let
+        # the model answer (best-effort) so chat stays useful under local embeddings.
+        response = self.llm.chat(messages, metadata={"task": "chat_response", "mode": mode})
         actions = self._extract_actions(message, response, rag_hits)
         reasoning_trace = self._build_reasoning_trace(
             message=message,
@@ -716,45 +717,123 @@ INSTRUCTIONS:
             compressed_context=(compressed_history + "\n" + memory_context).strip(),
         )
 
+        top_cred = max([float(s.get("credibility", 0.0) or 0.0) for s in sources[:3]] + [0.0])
+        thin_context = not context_text or top_cred < 0.35
+        grounding_note = (
+            "CITATION FORMAT: cite with [MM:SS], mention the speaker when known, and prefer the transcript context above."
+            if not thin_context else
+            "The transcript context above is thin or low-confidence. Still give a genuinely helpful answer: "
+            "use the episode title/topic and your general understanding, and note briefly when something isn't "
+            "directly grounded in the transcript. Cite [MM:SS] only when the context actually supports it."
+        )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "system", "content": f"LOCAL VERIFIED RAG CONTEXT:\n{context_text}" if context_text else "No specific transcript context found."},
-            {
-                "role": "system",
-                "content": "CITATION FORMAT: cite with [MM:SS], mention speaker when known, and avoid unsupported claims.",
-            },
+            {"role": "system", "content": grounding_note},
         ]
 
         native_reminders = {"tr": "Lütfen sadece Türkçe cevap ver.", "en": "Please respond only in English."}
         final_msg = f"{message}\n\n(Important: {native_reminders.get(target_lang[:2], 'Respond in ' + target_lang)})"
         messages.append({"role": "user", "content": final_msg})
 
-        top_cred = max([float(s.get("credibility", 0.0) or 0.0) for s in sources[:3]] + [0.0])
+        # Stream the response (best-effort; never hard-refuse when some context exists)
+        full_response = ""
+        for chunk in self.llm.chat(messages, stream=True, metadata={"task": "chat_response", "mode": mode}):
+            if chunk:
+                full_response += chunk
+                yield chunk
 
-        if not sources or top_cred < 0.2:
-            yield "I don't have strong transcript evidence for that question in this episode yet. Please ask a narrower question or provide a timestamp range."
-        else:
-            # Stream the response
-            full_response = ""
-            for chunk in self.llm.chat(messages, stream=True, metadata={"task": "chat_response", "mode": mode}):
-                if chunk:
-                    full_response += chunk
-                    yield chunk
+        # Save to DB after streaming completes
+        q_vec = self.embeddings.embed_text(message)
+        self.vector_store.upsert_chat_exchange(user_id, episode_id, message, full_response, q_vec)
 
-            # Save to DB after streaming completes
-            q_vec = self.embeddings.embed_text(message)
-            self.vector_store.upsert_chat_exchange(user_id, episode_id, message, full_response, q_vec)
+        chat_msg = ChatMessage(
+            conversation_id=conv.id,
+            user_id=user_id,
+            episode_id=episode_id,
+            user_message=message,
+            ai_response=full_response,
+            created_at=datetime.now(timezone.utc),
+        )
+        self.db.add(chat_msg)
+        self.db.commit()
 
-            chat_msg = ChatMessage(
-                conversation_id=conv.id,
-                user_id=user_id,
-                episode_id=episode_id,
-                user_message=message,
-                ai_response=full_response,
-                created_at=datetime.now(timezone.utc),
-            )
-            self.db.add(chat_msg)
-            self.db.commit()
+    def process_library_stream(self, user_id: str, message: str, lang: Optional[str] = None):
+        """Chat across the user's ENTIRE library. Yields dict events:
+        {"type":"sources","data":[...]} once, then {"type":"delta","text":...}.
+        """
+        episodes = (
+            self.db.query(Episode)
+            .filter(Episode.user_id == user_id, Episode.status == "completed")
+            .all()
+        )
+        if not episodes:
+            yield {"type": "delta", "text": "Your library is empty — process a podcast first, then ask me anything across all of them."}
+            return
+
+        ep_title = {e.id: e.title for e in episodes}
+        episode_ids = list(ep_title.keys())
+        target_lang = lang or "en"
+
+        # Hybrid search across all episodes
+        q_vec = self.embeddings.embed_text(message)
+        hits = self.vector_store.search(episode_ids=episode_ids, query_vector=q_vec, query_text=message, limit=16)
+        reranked = self.embeddings.rerank(message, hits, top_k=10) if hits else []
+
+        # Build sources + context (best snippet per episode, keep variety)
+        sources, seen_eps = [], set()
+        for h in reranked:
+            eid = h.get("episode_id")
+            ts = float(h.get("timestamp", 0) or 0)
+            key = (eid, round(ts / 30))
+            if key in seen_eps:
+                continue
+            seen_eps.add(key)
+            sources.append({
+                "episode_id": eid,
+                "episode_title": ep_title.get(eid, "Episode"),
+                "timestamp": ts,
+                "text": (h.get("text") or "")[:240],
+            })
+            if len(sources) >= 6:
+                break
+
+        yield {"type": "sources", "data": sources}
+
+        context_text = "\n".join(
+            f"[{s['episode_title']} @ {int(s['timestamp']//60):02d}:{int(s['timestamp']%60):02d}] {s['text']}"
+            for s in sources
+        )
+
+        system = (
+            f"You are the user's personal podcast librarian. Answer in {self._lang_name(target_lang)}. "
+            "You have access to excerpts retrieved from across their entire podcast library (below). "
+            "Synthesize across episodes when relevant, and CITE sources inline as [Episode title @ MM:SS]. "
+            "If the excerpts don't cover the question, say so briefly and answer from general understanding."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "system", "content": f"LIBRARY EXCERPTS:\n{context_text}" if context_text else "No excerpts found."},
+            {"role": "user", "content": message},
+        ]
+
+        full = ""
+        for chunk in self.llm.chat(messages, stream=True, metadata={"task": "library_chat"}):
+            if chunk:
+                full += chunk
+                yield {"type": "delta", "text": chunk}
+
+        # Persist as a chat exchange (episode_id=0 sentinel for library-wide)
+        try:
+            self.vector_store.upsert_chat_exchange(user_id, 0, message, full, q_vec)
+        except Exception:
+            pass
+
+    def _lang_name(self, code: str) -> str:
+        return {
+            "en": "English", "tr": "Turkish", "fr": "French", "es": "Spanish", "de": "German",
+            "it": "Italian", "pt": "Portuguese", "ru": "Russian", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
+        }.get((code or "en")[:2], "English")
 
     def get_conversation_history(self, user_id: str, episode_id: int, mode: str = "assistant", limit: int = 50) -> List[Dict[str, Any]]:
         conv = (

@@ -5,7 +5,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { IntelligencePanel } from '@/components/IntelligencePanel';
 import { PremiumAudioPlayer } from '@/components/PremiumAudioPlayer';
-import { SimpleSummaryView } from '@/components/SimpleSummaryView';
+import { SummaryDashboard } from '@/components/summary/SummaryDashboard';
 import api, { Episode, Transcript, Summary, Chapter, QuizQuestion, REQUEST_TIMEOUTS } from '@/lib/api';
 import {
     ArrowLeft,
@@ -369,12 +369,13 @@ export default function EpisodeWorkspace() {
                     </div>
                 </header>
 
-                <SimpleSummaryView
+                <SummaryDashboard
                     summary={summary}
                     status={currentStatus || 'pending'}
                     progress={currentProgress || 0}
                     onSeek={handleSeek}
-                    transcriptSegments={transcript?.segments || []}
+                    speakerMap={episode.speaker_map}
+                    episodeId={episode.id}
                 />
 
                 {summary && (
