@@ -7,7 +7,7 @@ import sys
 
 from app.db.session import SessionLocal
 from app.models.podcast import (
-    Episode, Transcript, Glossary, Entity, EpisodeEntity, EntityRelation,
+    Episode, Transcript, Glossary, Entity, EpisodeEntity, EntityRelation, Chapter, Summary,
 )
 from app.services.llm_client import LLMClient
 from app.services.embeddings import EmbeddingService
@@ -135,6 +135,48 @@ def backfill(episode_ids):
         except Exception as e:
             db.rollback()
             print(f"[{eid}] entities FAILED: {e}")
+
+        # ---- Chapters (book-style index) — only if missing ----
+        try:
+            existing_ch = db.query(Chapter).filter(Chapter.episode_id == eid).count()
+            if existing_ch < 2:
+                db.query(Chapter).filter(Chapter.episode_id == eid).delete()
+                chapters_data = llm.extract_chapters(segments, lang=lang)
+                # Fallback: derive from summary topic_transitions + insights
+                if len(chapters_data) < 2:
+                    summ = db.query(Summary).filter(Summary.episode_id == eid).first()
+                    tts = (summ.topic_transitions if summ else None) or []
+                    attrs = (summ.insight_attribution if summ else None) or []
+                    derived = []
+                    for tt in tts:
+                        t_start = float(tt.get("start", 0) or 0)
+                        t_end = float(tt.get("end", t_start + 1e9) or (t_start + 1e9))
+                        desc = next((str(a.get("insight", "")).strip() for a in attrs
+                                     if t_start <= float(a.get("start", -1) or -1) < t_end and a.get("insight")), "")
+                        title = str(tt.get("topic", "") or "").strip()
+                        if title:
+                            derived.append({"timestamp": t_start, "title": title, "summary": desc})
+                    if len(derived) >= 2:
+                        chapters_data = derived
+                n = 0
+                for ch in chapters_data:
+                    if not isinstance(ch, dict) or "timestamp" not in ch:
+                        continue
+                    db.add(Chapter(
+                        episode_id=eid,
+                        timestamp=float(ch.get("timestamp", 0) or 0),
+                        title=str(ch.get("title", "Untitled"))[:200],
+                        summary=str(ch.get("summary", "") or ""),
+                        is_main=1,
+                    ))
+                    n += 1
+                db.commit()
+                print(f"[{eid}] chapters: {n} created")
+            else:
+                print(f"[{eid}] chapters: {existing_ch} already present, skipped")
+        except Exception as e:
+            db.rollback()
+            print(f"[{eid}] chapters FAILED: {e}")
 
         # ---- Speaker names + contribution ----
         try:

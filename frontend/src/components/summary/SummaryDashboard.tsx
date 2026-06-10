@@ -110,8 +110,10 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
 
   // ---- tab availability ----
   const hasAnalytics = speakerData.length || densityData.length || insightTl.length || topics.length || wordCloud.length;
-  const hasDeepDive = Object.values(cat).some((v: any) => v?.length) || perspectiveKeys.length || Object.keys(flow).length;
-  const hasNotes = Object.keys(layers).length || notes.length || claims.length;
+  const hasDeepDive =
+    Object.values(cat).some((v: any) => v?.length) || perspectiveKeys.length || Object.keys(flow).length ||
+    (s.topics || []).length || (s.suggested_questions || []).length;
+  const hasNotes = Object.keys(layers).length || notes.length || claims.length || !!s.global_summary;
 
   const tabs: { id: TabId; label: string; icon: any; show: boolean }[] = [
     { id: "overview", label: "Overview", icon: BookOpen, show: true },
@@ -289,7 +291,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                   <div className="h-56 relative">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                        <Pie data={speakerData} cx="50%" cy="50%" innerRadius={56} outerRadius={80} paddingAngle={4} dataKey="value">
+                        <Pie data={speakerData} cx="50%" cy="50%" innerRadius={56} outerRadius={80} paddingAngle={4} dataKey="value" isAnimationActive={false}>
                           {speakerData.map((e, i) => <Cell key={i} fill={SPEAKER_COLORS[i % SPEAKER_COLORS.length]} stroke="none" />)}
                         </Pie>
                         <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} itemStyle={{ color: "#fff" }} formatter={(v: any) => `${Number(v).toFixed(0)}%`} />
@@ -323,7 +325,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                       <XAxis dataKey="t" tickFormatter={formatTime} stroke="#666" fontSize={10} />
                       <YAxis hide />
                       <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} labelFormatter={(l: any) => formatTime(l)} />
-                      <Area type="monotone" dataKey="v" stroke="#3E5BFF" strokeWidth={2} fill="url(#dens)" />
+                      <Area type="monotone" dataKey="v" stroke="#3E5BFF" strokeWidth={2} fill="url(#dens)" isAnimationActive={false} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -340,7 +342,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                       <XAxis dataKey="t" tickFormatter={formatTime} stroke="#666" fontSize={10} />
                       <YAxis hide />
                       <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} labelFormatter={(l: any) => formatTime(l)} />
-                      <Bar dataKey="v" fill="#f59e0b" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="v" fill="#f59e0b" radius={[3, 3, 0, 0]} isAnimationActive={false} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -433,28 +435,89 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                 </div>
               </section>
             )}
+
+            {(s.topics || []).length > 0 && (
+              <section className="space-y-3">
+                <SectionTitle icon={BarChart3}>Thematic Weights</SectionTitle>
+                <div className="p-6 rounded-2xl bg-card border border-border space-y-3">
+                  {(() => {
+                    const tps = (s.topics || []) as any[];
+                    const maxV = Math.max(...tps.map((t) => Number(t.value) || 0), 1);
+                    return tps.slice(0, 8).map((t: any, i: number) => (
+                      <div key={i} className="space-y-1">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-foreground">{t.label}</span>
+                          <span className="text-muted-foreground font-mono text-xs">{t.value}</span>
+                        </div>
+                        <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${(Number(t.value) / maxV) * 100}%`, background: SPEAKER_COLORS[i % SPEAKER_COLORS.length] }} />
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </section>
+            )}
+
+            {(s.suggested_questions || []).length > 0 && (
+              <section className="space-y-3">
+                <SectionTitle icon={HelpCircle} color="text-cyan-400">Questions to Explore</SectionTitle>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {(s.suggested_questions as string[]).slice(0, 6).map((q, i) => (
+                    <div key={i} className="p-4 rounded-2xl bg-card border border-border text-sm text-foreground/90 leading-snug italic">“{q}”</div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {!hasDeepDive && (
+              <p className="text-sm text-muted-foreground text-center py-12">Deep-dive analysis wasn't generated for this episode.</p>
+            )}
           </div>
         )}
 
         {/* ============ NOTES & FACTS ============ */}
         {tab === "notes" && (
           <div className="space-y-10">
-            {(layers.level_1_tldr || layers.level_2_exec) && (
-              <section className="space-y-3">
-                <SectionTitle icon={Layers}>Layered Summary</SectionTitle>
-                {layers.level_1_tldr && <div className="p-4 rounded-2xl bg-primary/5 border border-primary/20"><span className="text-[10px] font-black uppercase tracking-widest text-primary">TL;DR</span><p className="mt-1 text-foreground">{layers.level_1_tldr}</p></div>}
-                {layers.level_3_outline?.length > 0 && (
-                  <div className="space-y-2">
-                    {layers.level_3_outline.map((o: any, i: number) => (
-                      <details key={i} className="p-4 rounded-2xl bg-card border border-border group">
-                        <summary className="cursor-pointer font-bold text-foreground list-none flex items-center justify-between">{o.title}<span className="text-muted-foreground text-xs group-open:rotate-180 transition-transform">▾</span></summary>
-                        <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{o.summary}</p>
-                      </details>
-                    ))}
-                  </div>
-                )}
-              </section>
-            )}
+            {(() => {
+              // LLM layers sometimes carry markdown headers or get cut mid-sentence.
+              const clean = (t: any) => {
+                let x = String(t || "").replace(/^#{1,4}\s*/gm, "").trim();
+                if (x && !/[.!?…”"']$/.test(x)) x += "…";
+                return x;
+              };
+              const tldr = clean(layers.level_1_tldr) || String(s.executive_brief || "");
+              const exec = clean(layers.level_2_exec);
+              const lvl4 = (layers.level_4_notes || []) as any[];
+              if (!tldr && !exec && !layers.level_3_outline?.length && !lvl4.length) return null;
+              return (
+                <section className="space-y-3">
+                  <SectionTitle icon={Layers}>Layered Summary</SectionTitle>
+                  {tldr && <div className="p-4 rounded-2xl bg-primary/5 border border-primary/20"><span className="text-[10px] font-black uppercase tracking-widest text-primary">TL;DR</span><p className="mt-1 text-foreground">{tldr}</p></div>}
+                  {exec && <div className="p-4 rounded-2xl bg-card border border-border"><span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Executive</span><p className="mt-1 text-foreground/90 text-sm leading-relaxed">{exec}</p></div>}
+                  {layers.level_3_outline?.length > 0 && (
+                    <div className="space-y-2">
+                      {layers.level_3_outline.map((o: any, i: number) => (
+                        <details key={i} className="p-4 rounded-2xl bg-card border border-border group">
+                          <summary className="cursor-pointer font-bold text-foreground list-none flex items-center justify-between">{clean(o.title)}<span className="text-muted-foreground text-xs group-open:rotate-180 transition-transform">▾</span></summary>
+                          <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{clean(o.summary)}</p>
+                        </details>
+                      ))}
+                    </div>
+                  )}
+                  {lvl4.length > 0 && (
+                    <div className="space-y-3">
+                      {lvl4.map((n: any, i: number) => (
+                        <div key={i} className="p-4 rounded-2xl bg-card border border-border">
+                          {n.section && <h4 className="font-bold text-foreground mb-1.5 text-sm">{clean(n.section)}</h4>}
+                          <ul className="list-disc ml-5 space-y-1 text-sm text-foreground/85">{(n.notes || []).map((x: string, j: number) => <li key={j}>{clean(x)}</li>)}</ul>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            })()}
 
             {notes.length > 0 && (
               <section className="space-y-3">
@@ -466,6 +529,15 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                       <ul className="list-disc ml-5 space-y-1 text-sm text-foreground/90">{(n.notes || []).map((x: string, j: number) => <li key={j}>{x}</li>)}</ul>
                     </div>
                   ))}
+                </div>
+              </section>
+            )}
+
+            {!notes.length && s.global_summary && (
+              <section className="space-y-3">
+                <SectionTitle icon={FileText}>Full Notes</SectionTitle>
+                <div className="p-6 rounded-2xl bg-card border border-border text-sm text-foreground/90 leading-relaxed whitespace-pre-wrap">
+                  {String(s.global_summary).replace(/^#{1,4}\s*/gm, "")}
                 </div>
               </section>
             )}

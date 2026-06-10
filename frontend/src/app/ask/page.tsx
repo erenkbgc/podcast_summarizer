@@ -68,6 +68,16 @@ export default function AskLibraryPage() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      // Accumulate OUTSIDE the state updater. Mutating inside setMessages
+      // duplicates every token under React StrictMode (updater runs twice).
+      let fullContent = "";
+      let srcs: Source[] | undefined;
+      const commit = () =>
+        setMessages((prev) => {
+          const msgs = [...prev];
+          msgs[msgs.length - 1] = { role: "assistant", content: fullContent, sources: srcs };
+          return msgs;
+        });
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -80,14 +90,10 @@ export default function AskLibraryPage() {
           if (payload === "[DONE]") continue;
           try {
             const ev = JSON.parse(payload);
-            setMessages((prev) => {
-              const msgs = [...prev];
-              const last = msgs[msgs.length - 1];
-              if (ev.type === "sources") last.sources = ev.data;
-              else if (ev.type === "delta") last.content += ev.text;
-              else if (ev.type === "error") last.content += "\n\n⚠️ Something went wrong.";
-              return msgs;
-            });
+            if (ev.type === "sources") srcs = ev.data;
+            else if (ev.type === "delta") fullContent += ev.text;
+            else if (ev.type === "error") fullContent += "\n\n⚠️ Something went wrong.";
+            commit();
           } catch {}
         }
       }

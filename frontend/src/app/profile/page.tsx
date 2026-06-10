@@ -1,210 +1,277 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
+import React, { useMemo } from "react";
+import { motion } from "framer-motion";
 import {
-    Activity,
-    Brain,
-    Clock,
-    Cpu,
-    Sparkles,
-    TrendingUp
-} from 'lucide-react';
-import { getUserProfile, UserProfile } from '@/lib/api';
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
+  Brain, Clock, Flame, Sparkles, TrendingUp, BookOpen, Network, Trophy,
+  Zap, Headphones, Globe2, Moon, Target, Lock, Rocket,
+} from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import api, { getUserProfile, getEpisodes, getKnowledgeOverview } from "@/lib/api";
+import { Sidebar } from "@/components/Sidebar";
+import { cn } from "@/lib/utils";
+import {
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, AreaChart, Area,
+  Tooltip as ReTooltip, Cell,
+} from "recharts";
 
-export default function ProfilePage() {
-    const [profile, setProfile] = useState<UserProfile | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
+const COLORS = ["#3E5BFF", "#a78bfa", "#34d399", "#f59e0b", "#ec4899", "#22d3ee", "#f97316", "#84cc16"];
 
-    useEffect(() => {
-        const loadProfile = async () => {
-            try {
-                const res = await getUserProfile();
-                setProfile(res.data);
-            } catch (err) {
-                console.error("Failed to load profile", err);
-            } finally {
-                setIsLoading(false);
-            }
-        };
-        loadProfile();
-    }, []);
+const LEVEL_TITLES = [
+  "Curious Spark", "Signal Hunter", "Pattern Seeker", "Insight Collector",
+  "Knowledge Weaver", "Synthesis Engine", "Neural Architect", "Cognitive Voyager",
+  "Mind Cartographer", "Neural Sage",
+];
 
-    if (isLoading) {
-        return (
-            <div className="h-screen bg-[#050505] flex items-center justify-center">
-                <div className="flex flex-col items-center gap-4">
-                    <div className="w-12 h-12 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
-                    <div className="text-gray-500 text-sm font-medium animate-pulse">Syncing Neural Identity...</div>
-                </div>
-            </div>
-        );
+export default function NeuralProfilePage() {
+  const { data: profile, isLoading } = useQuery({
+    queryKey: ["user-profile"],
+    queryFn: () => getUserProfile().then((r) => r.data),
+  });
+  const { data: episodes = [] } = useQuery({
+    queryKey: ["episodes"],
+    queryFn: () => getEpisodes().then((r) => r.data),
+  });
+  const { data: knowledge = [] } = useQuery({
+    queryKey: ["knowledge-overview"],
+    queryFn: () => getKnowledgeOverview().then((r) => r.data),
+  });
+  const { data: graph } = useQuery({
+    queryKey: ["graph-full"],
+    queryFn: () => api.get("/v1/graph/full").then((r) => r.data),
+  });
+
+  // ---- derived fun stats ----
+  const completed = useMemo(() => (episodes as any[]).filter((e) => e.status === "completed"), [episodes]);
+  const termCount = useMemo(() => (knowledge as any[]).reduce((acc, ep) => acc + (ep.glossary?.length || 0), 0), [knowledge]);
+  const entityCount = graph?.nodes?.length || 0;
+  const langs = useMemo(() => new Set((episodes as any[]).map((e) => (e.preferred_lang || "en").slice(0, 2))), [episodes]);
+
+  const xp = completed.length * 120 + termCount * 8 + entityCount * 5;
+  const level = Math.max(1, Math.floor(Math.sqrt(xp / 80)));
+  const nextLevelXp = 80 * (level + 1) ** 2;
+  const prevLevelXp = 80 * level ** 2;
+  const levelProgress = Math.min(1, Math.max(0, (xp - prevLevelXp) / Math.max(1, nextLevelXp - prevLevelXp)));
+  const levelTitle = LEVEL_TITLES[Math.min(level - 1, LEVEL_TITLES.length - 1)];
+
+  // Weekly activity (last 8 weeks)
+  const activityData = useMemo(() => {
+    const weeks: number[] = Array(8).fill(0);
+    const now = Date.now();
+    for (const e of episodes as any[]) {
+      const age = Math.floor((now - new Date(e.created_at).getTime()) / (7 * 86400000));
+      if (age >= 0 && age < 8) weeks[age] += 1;
     }
+    return weeks.map((v, i) => ({ w: i === 0 ? "now" : `${i}w ago`, v })).reverse();
+  }, [episodes]);
 
-    const barData = profile?.stats.top_topics.map(t => ({
-        category: t.label,
-        value: t.value,
-    })) || [];
+  const topicData = (profile?.stats.top_topics || []).slice(0, 7).map((t) => ({ name: t.label, value: t.value }));
 
+  const obsessions = useMemo(() => {
+    const nodes = [...(graph?.nodes || [])].sort((a: any, b: any) => b.mentions - a.mentions).slice(0, 10);
+    const max = Math.max(...nodes.map((n: any) => n.mentions), 1);
+    return nodes.map((n: any) => ({ ...n, size: 13 + (n.mentions / max) * 15 }));
+  }, [graph]);
+
+  // Achievements
+  const achievements = useMemo(() => {
+    const hasNightOwl = (episodes as any[]).some((e) => {
+      const h = new Date(e.created_at).getHours();
+      return h >= 0 && h < 5;
+    });
+    const weekCounts: Record<number, number> = {};
+    for (const e of episodes as any[]) {
+      const wk = Math.floor(new Date(e.created_at).getTime() / (7 * 86400000));
+      weekCounts[wk] = (weekCounts[wk] || 0) + 1;
+    }
+    const bingeWeek = Math.max(0, ...Object.values(weekCounts));
+    return [
+      { icon: Rocket, label: "First Synthesis", desc: "Process your first episode", done: completed.length >= 1 },
+      { icon: Headphones, label: "Triple Play", desc: "3 episodes processed", done: completed.length >= 3 },
+      { icon: Flame, label: "Binge Mind", desc: "3+ episodes in one week", done: bingeWeek >= 3 },
+      { icon: BookOpen, label: "Lexicon Builder", desc: "Learn 20+ terms", done: termCount >= 20 },
+      { icon: Network, label: "Brain Mapper", desc: "Map 10+ entities", done: entityCount >= 10 },
+      { icon: Globe2, label: "Polyglot", desc: "Listen in 2+ languages", done: langs.size >= 2 },
+      { icon: Moon, label: "Night Owl", desc: "Synthesize after midnight", done: hasNightOwl },
+      { icon: Target, label: "Consistent Mind", desc: "Consistency score 50+", done: (profile?.stats.consistency_score || 0) >= 50 },
+    ];
+  }, [episodes, completed, termCount, entityCount, langs, profile]);
+
+  const unlocked = achievements.filter((a) => a.done).length;
+
+  if (isLoading) {
     return (
-        <div className="min-h-screen bg-[#050505] text-white p-8 pb-24 overflow-x-hidden">
-            {/* Background elements */}
-            <div className="fixed inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-blue-600/5 rounded-full blur-[120px]" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-purple-600/5 rounded-full blur-[120px]" />
-            </div>
-
-            <div className="max-w-6xl mx-auto relative z-10">
-                {/* Header / Identity Section */}
-                <div className="flex flex-col md:flex-row items-center gap-8 mb-12">
-                    <motion.div
-                        initial={{ scale: 0.8, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        className="relative group"
-                    >
-                        <div className="w-32 h-32 md:w-40 md:h-40 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-500/20 group-hover:rotate-3 transition-transform duration-500">
-                            <Brain size={64} className="text-white drop-shadow-lg" />
-                        </div>
-                        <div className="absolute -bottom-2 -right-2 bg-black border border-white/10 p-2 rounded-xl shadow-xl flex items-center gap-2">
-                            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">lvl 12 Neural</span>
-                        </div>
-                    </motion.div>
-
-                    <div className="text-center md:text-left">
-                        <motion.div
-                            initial={{ x: -20, opacity: 0 }}
-                            animate={{ x: 0, opacity: 1 }}
-                            className="flex flex-col md:flex-row items-baseline gap-2 mb-2"
-                        >
-                            <h1 className="text-4xl md:text-5xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400">
-                                {profile?.username}
-                            </h1>
-                            <span className="px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full text-blue-400 text-xs font-black uppercase tracking-widest">
-                                {profile?.persona_title}
-                            </span>
-                        </motion.div>
-
-                        <motion.div
-                            initial={{ y: 20, opacity: 0 }}
-                            animate={{ y: 0, opacity: 1 }}
-                            transition={{ delay: 0.2 }}
-                            className="max-w-xl"
-                        >
-                            <p className="text-gray-400 text-lg leading-relaxed italic border-l-2 border-white/10 pl-6 py-1">
-                                "{profile?.bio}"
-                            </p>
-                        </motion.div>
-                    </div>
-                </div>
-
-                {/* Grid Layout for Stats & Viz */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-                    {/* Core Stats */}
-                    <motion.div
-                        initial={{ y: 20, opacity: 0 }}
-                        animate={{ y: 0, opacity: 1 }}
-                        transition={{ delay: 0.3 }}
-                        className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4"
-                    >
-                        <StatCard icon={Cpu} label="Processed" value={profile?.stats.total_episodes} subtext="Episodes" />
-                        <StatCard icon={Clock} label="Synthesized" value={profile?.stats.total_hours.toFixed(1)} subtext="Hours" />
-                        <StatCard icon={TrendingUp} label="Velocity" value={profile?.stats.avg_episodes_per_week.toFixed(1)} subtext="Eps / week" />
-                        <StatCard icon={Activity} label="Focus" value={`${profile?.stats.consistency_score.toFixed(0)}%`} subtext="Consistency" />
-                    </motion.div>
-
-                    {/* Podcast Type Distribution */}
-                    <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl">
-                        <div className="flex items-center gap-2 mb-6">
-                            <Sparkles size={18} className="text-blue-400" />
-                            <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400">Podcast Type Distribution</h3>
-                        </div>
-                        <div className="h-[280px] w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={barData} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
-                                    <XAxis dataKey="category" tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} allowDecimals={false} />
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: '#000', border: '1px solid #ffffff10', borderRadius: '12px', fontSize: '10px' }}
-                                        itemStyle={{ color: '#fff' }}
-                                        labelStyle={{ color: '#9ca3af' }}
-                                    />
-                                    <Bar
-                                        dataKey="value"
-                                        radius={[8, 8, 0, 0]}
-                                        fill="#3b82f6"
-                                        maxBarSize={42}
-                                    />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-
-                    {/* Top Categories */}
-                    <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl">
-                        <div className="flex items-center justify-between mb-8">
-                            <div className="flex items-center gap-2">
-                                <Activity size={18} className="text-indigo-400" />
-                                <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400">Most Listened Categories</h3>
-                            </div>
-                            <div className="text-[10px] font-bold text-indigo-400 uppercase tracking-tighter">Real Data</div>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {(profile?.top_categories || []).map((cat, i) => (
-                                <div key={cat} className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 flex items-center justify-between">
-                                    <div className="text-sm text-gray-200">{cat}</div>
-                                    <div className="text-xs text-blue-400 font-bold">#{i + 1}</div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Next Step */}
-                    <div className="bg-gradient-to-br from-blue-600/20 to-purple-600/20 border border-white/10 rounded-3xl p-6 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10">
-                            <Sparkles size={120} />
-                        </div>
-                        <div className="flex items-center gap-2 mb-4">
-                            <Target size={18} className="text-white" />
-                            <h3 className="text-sm font-black uppercase tracking-[0.2em] text-white">Next Synthesis Target</h3>
-                        </div>
-
-                        <p className="text-white/80 text-sm mb-2 leading-relaxed relative z-10">
-                            You most listen to <strong>{profile?.top_categories?.[0] || 'general'}</strong> podcasts.
-                        </p>
-                        <p className="text-white/70 text-xs leading-relaxed">
-                            Keep this profile focused by ingesting similar episodes to improve recommendation and quiz quality.
-                        </p>
-                    </div>
-
-                </div>
-            </div>
+      <div className="flex h-screen bg-background">
+        <Sidebar />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-12 h-12 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+            <div className="text-muted-foreground text-sm font-medium animate-pulse">Syncing Neural Identity…</div>
+          </div>
         </div>
+      </div>
     );
-}
+  }
 
-function StatCard({
-    icon: Icon,
-    label,
-    value,
-    subtext,
-}: {
-    icon: React.ComponentType<{ size?: number; className?: string }>;
-    label: string;
-    value: string | number | undefined;
-    subtext: string;
-}) {
-    return (
-        <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-xl group hover:border-white/20 transition-all duration-300">
-            <div className="w-8 h-8 bg-white/5 rounded-xl flex items-center justify-center text-gray-400 group-hover:text-blue-400 transition-colors mb-4 border border-white/5">
-                <Icon size={16} />
-            </div>
-            <div className="text-[10px] font-black tracking-widest text-gray-500 uppercase mb-1">{label}</div>
-            <div className="text-2xl font-black tracking-tight text-white">{value}</div>
-            <div className="text-[10px] font-bold text-gray-600">{subtext}</div>
+  return (
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+      <Sidebar />
+      <main className="flex-1 overflow-y-auto custom-scrollbar relative">
+        {/* ambient glow */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute top-[-15%] left-[15%] w-[45%] h-[45%] bg-primary/5 rounded-full blur-[140px]" />
+          <div className="absolute bottom-[-10%] right-[5%] w-[40%] h-[40%] bg-purple-600/5 rounded-full blur-[140px]" />
         </div>
-    );
+
+        <div className="relative max-w-5xl mx-auto px-8 py-12 space-y-12 pb-24">
+          {/* ===== Identity Card ===== */}
+          <motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+            className="rounded-[2rem] border border-border bg-card/60 backdrop-blur-xl p-8 flex flex-col md:flex-row items-center gap-8">
+            {/* Level ring */}
+            <div className="relative w-36 h-36 shrink-0">
+              <svg className="w-full h-full -rotate-90" viewBox="0 0 144 144">
+                <circle cx="72" cy="72" r="62" fill="none" stroke="currentColor" strokeWidth="8" className="text-secondary" />
+                <motion.circle cx="72" cy="72" r="62" fill="none" stroke="url(#lvlgrad)" strokeWidth="8"
+                  strokeLinecap="round" strokeDasharray={389.6}
+                  initial={{ strokeDashoffset: 389.6 }}
+                  animate={{ strokeDashoffset: 389.6 * (1 - levelProgress) }}
+                  transition={{ duration: 1.2, ease: "easeOut" }} />
+                <defs>
+                  <linearGradient id="lvlgrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="#3E5BFF" /><stop offset="100%" stopColor="#a78bfa" />
+                  </linearGradient>
+                </defs>
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground">Level</span>
+                <span className="text-4xl font-black font-heading bg-gradient-to-br from-primary to-purple-400 bg-clip-text text-transparent">{level}</span>
+                <span className="text-[9px] font-mono text-muted-foreground">{xp} XP</span>
+              </div>
+            </div>
+
+            <div className="flex-1 text-center md:text-left space-y-3">
+              <div>
+                <div className="flex items-center justify-center md:justify-start gap-2 text-primary mb-1">
+                  <Brain size={15} />
+                  <span className="text-[10px] font-black uppercase tracking-[0.3em]">Neural Profile</span>
+                </div>
+                <h1 className="text-3xl font-black font-heading tracking-tight">{profile?.username}</h1>
+                <div className="mt-2 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 border border-primary/20">
+                  <Sparkles size={12} className="text-primary" />
+                  <span className="text-xs font-bold text-primary">{levelTitle}</span>
+                  {profile?.persona_title && <span className="text-xs text-muted-foreground">· {profile.persona_title}</span>}
+                </div>
+              </div>
+              {profile?.bio && <p className="text-sm text-muted-foreground leading-relaxed max-w-xl italic">"{profile.bio}"</p>}
+              <p className="text-[10px] font-mono text-muted-foreground/60">{Math.max(0, nextLevelXp - xp)} XP to level {level + 1}</p>
+            </div>
+          </motion.section>
+
+          {/* ===== Stat tiles ===== */}
+          <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+              { icon: Headphones, label: "Episodes Synthesized", value: completed.length, color: "text-primary" },
+              { icon: Clock, label: "Hours Absorbed", value: `${(profile?.stats.total_hours || 0).toFixed(1)}h`, color: "text-emerald-400" },
+              { icon: BookOpen, label: "Terms Learned", value: termCount, color: "text-amber-400" },
+              { icon: Network, label: "Entities Mapped", value: entityCount, color: "text-purple-400" },
+            ].map((t, i) => (
+              <motion.div key={t.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
+                className="p-5 rounded-3xl bg-card border border-border space-y-2">
+                <t.icon size={18} className={t.color} />
+                <div className="text-2xl font-black font-heading">{t.value}</div>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{t.label}</div>
+              </motion.div>
+            ))}
+          </section>
+
+          {/* ===== Listening DNA + Activity ===== */}
+          <section className="grid lg:grid-cols-2 gap-6">
+            <div className="p-6 rounded-3xl bg-card border border-border space-y-4">
+              <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+                <TrendingUp size={14} className="text-primary" /> Listening DNA
+              </h3>
+              {topicData.length ? (
+                <div className="h-52">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topicData} layout="vertical" margin={{ left: 8, right: 24 }}>
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="name" width={110} stroke="#888" fontSize={11} tickLine={false} axisLine={false} />
+                      <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                      <Bar dataKey="value" radius={[0, 6, 6, 0]} isAnimationActive={false}>
+                        {topicData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground py-10 text-center">Process episodes to discover your DNA.</p>
+              )}
+            </div>
+
+            <div className="p-6 rounded-3xl bg-card border border-border space-y-4">
+              <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+                <Zap size={14} className="text-amber-400" /> Activity Pulse
+                <span className="ml-auto text-[10px] font-mono normal-case tracking-normal">last 8 weeks</span>
+              </h3>
+              <div className="h-52">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={activityData}>
+                    <defs>
+                      <linearGradient id="pulse" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.5} /><stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <XAxis dataKey="w" stroke="#666" fontSize={10} />
+                    <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} />
+                    <Area type="monotone" dataKey="v" stroke="#f59e0b" strokeWidth={2} fill="url(#pulse)" isAnimationActive={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </section>
+
+          {/* ===== Obsessions ===== */}
+          {obsessions.length > 0 && (
+            <section className="p-6 rounded-3xl bg-card border border-border space-y-4">
+              <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+                <Flame size={14} className="text-orange-400" /> Your Brain Keeps Coming Back To…
+              </h3>
+              <div className="flex flex-wrap gap-x-5 gap-y-3 items-center">
+                {obsessions.map((o: any, i: number) => (
+                  <span key={o.id} style={{ fontSize: o.size }} className="font-bold leading-none transition-colors hover:text-primary cursor-default"
+                    title={`${o.mentions} mentions · ${o.type}`}>
+                    <span style={{ color: COLORS[i % COLORS.length] }}>●</span> {o.label}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ===== Achievements ===== */}
+          <section className="space-y-4">
+            <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+              <Trophy size={14} className="text-amber-400" /> Achievements
+              <span className="ml-auto text-xs font-mono normal-case tracking-normal text-foreground">{unlocked}/{achievements.length}</span>
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {achievements.map((a, i) => (
+                <motion.div key={a.label} initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.04 }}
+                  className={cn(
+                    "p-5 rounded-3xl border text-center space-y-2 transition-all",
+                    a.done ? "bg-card border-amber-500/30 shadow-[0_0_24px_-8px_rgba(245,158,11,0.25)]" : "bg-card/40 border-border opacity-50"
+                  )}>
+                  <div className={cn("mx-auto w-11 h-11 rounded-2xl flex items-center justify-center",
+                    a.done ? "bg-amber-500/15 text-amber-400" : "bg-secondary text-muted-foreground")}>
+                    {a.done ? <a.icon size={20} /> : <Lock size={18} />}
+                  </div>
+                  <div className="text-xs font-black">{a.label}</div>
+                  <div className="text-[10px] text-muted-foreground leading-snug">{a.desc}</div>
+                </motion.div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  );
 }
