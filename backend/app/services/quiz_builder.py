@@ -118,6 +118,20 @@ def _salient_phrase(text: str, lang: str = "en") -> Optional[str]:
     return _pick_keyword(cleaned)
 
 
+_FILLER_PREFIXES = (
+    "yeah", "yes", "i think", "i mean", "you know", "i'm wondering", "i guess",
+    "well", "so ", "and ", "but ", "okay", "right", "um", "uh", "like ",
+    "evet", "yani", "şey", "bence", "işte",
+)
+
+
+def _is_filler_evidence(text: str) -> bool:
+    low = _clean_text(text).lower()
+    if len(low) < 40:
+        return True
+    return any(low.startswith(p) for p in _FILLER_PREFIXES)
+
+
 def build_quiz_from_summary(
     summary: Dict[str, Any],
     count: int = 8,
@@ -125,54 +139,65 @@ def build_quiz_from_summary(
 ) -> List[Dict[str, Any]]:
     """Build MEANINGFUL comprehension questions from already-LLM-generated summary content.
 
-    Uses insight_attribution (insight + evidence + timestamp) and key_takeaways to create:
-      1) Evidence -> Insight matching (what point does this moment support?)
-      2) Fill-in-the-blank on key takeaways
-    Distractors are other REAL insights/takeaways, so options are always plausible.
-    No meaningless 'who said' or keyword-jumble questions.
+    Two complementary, genuinely useful question types (NO 'who said SPEAKER_01' garbage):
+      1) Evidence -> Insight matching: given a real moment, which conclusion does it support?
+         Only one insight matches that specific evidence; distractors are other real insights.
+      2) Fill-in-the-blank on key takeaways: blank a salient term; distractors are other
+         salient terms from the episode.
+    Stems rotate so questions never look identical, and option sets are padded to 4.
     """
     is_tr = (lang or "en").startswith("tr")
     insights = [i for i in (summary.get("insight_attribution") or []) if isinstance(i, dict) and i.get("insight")]
     takeaways = [t for t in (summary.get("key_takeaways") or []) if isinstance(t, str) and len(t) > 25]
 
-    # Deduplicate takeaway/insight text
     def _norm(s: str) -> str:
         return _clean_text(s).lower()[:80]
 
-    quiz: List[Dict[str, Any]] = []
+    # Rotating stems so consecutive questions don't read identically.
+    EV_STEMS = (
+        ["Bu an, hangi ana fikri destekliyor?", "Bu bölümden çıkarılabilecek ana sonuç nedir?",
+         "Konuşmacılar burada özellikle neyi vurguluyor?"]
+        if is_tr else
+        ["What key point does this moment support?",
+         "Which conclusion best follows from this part of the episode?",
+         "What are the speakers mainly establishing here?"]
+    )
+    BLANK_STEM = "Ana fikri tamamlayın:" if is_tr else "Complete the key point:"
+    EXP_EV = ("Doğru seçenek bu bölümdeki kanıta dayanır." if is_tr
+              else "The correct option is grounded in the evidence from this segment.")
+    EXP_BLANK = ("Doğru terim bölümün ana fikrinden gelir." if is_tr
+                 else "The blanked term comes directly from this key point.")
 
-    T = {
-        "evidence_q": "Bu bölümde anlatılanlar hangi sonucu/çıkarımı destekliyor?" if is_tr
-                       else "Which conclusion does this part of the episode support?",
-        "blank_q": "Ana fikri tamamlayın: " if is_tr else "Complete the key point: ",
-        "exp_ev": "Bu sonuç, ilgili bölümdeki kanıt cümlesine dayanır." if is_tr
-                   else "This conclusion is grounded in the evidence from this segment.",
-        "exp_blank": "Doğru terim bölümün ana fikrinden gelir." if is_tr
-                      else "The correct term comes from the episode's key point.",
-    }
+    insight_texts = list(dict.fromkeys([_clean_text(i["insight"]) for i in insights]))
+
+    # Global salient-phrase pool for distractor padding (deduped, case-insensitive).
+    raw_pool = [p for p in (_salient_phrase(t, lang) for t in (takeaways + insight_texts)) if p]
+    salient_pool: List[str] = []
+    for p in raw_pool:
+        if p.lower() not in {x.lower() for x in salient_pool}:
+            salient_pool.append(p)
+
+    ev_items: List[Dict[str, Any]] = []
+    blank_items: List[Dict[str, Any]] = []
 
     # --- Type 1: Evidence -> Insight matching ---
-    insight_texts = [i["insight"] for i in insights]
-    for i in insights:
-        if len(quiz) >= count:
-            break
+    for n, i in enumerate(insights):
         evidence = _clean_text(re.sub(r"^[A-Z_0-9]+:\s*", "", i.get("evidence_text") or ""))
-        if len(evidence) < 30:
+        if _is_filler_evidence(evidence):
             continue
         correct = _clean_text(i["insight"])
         distractors = [d for d in insight_texts if _norm(d) != _norm(correct)]
         random.shuffle(distractors)
-        options = [correct] + distractors[:3]
-        options = list(dict.fromkeys(options))[:4]
+        options = list(dict.fromkeys([correct] + distractors))[:4]
         if len(options) < 3:
             continue
         opts = options[:]
         random.shuffle(opts)
-        quiz.append({
-            "question": f"{T['evidence_q']}\n\n“{_short_quote(evidence, 28)}”",
+        ev_items.append({
+            "question": f"{EV_STEMS[n % len(EV_STEMS)]}\n\n“{_short_quote(evidence, 26)}”",
             "options": opts,
             "correct_answer": opts.index(correct),
-            "explanation": T["exp_ev"],
+            "explanation": EXP_EV,
             "source_start": i.get("start"),
             "source_end": i.get("end"),
             "source_text": evidence,
@@ -181,28 +206,26 @@ def build_quiz_from_summary(
             "question_type": "comprehension",
         })
 
-    # --- Type 2: Fill-in-the-blank from takeaways ---
-    salient_pool = [p for p in (_salient_phrase(t, lang) for t in takeaways) if p]
+    # --- Type 2: Fill-in-the-blank ---
+    used_phrases = set()
     for t in takeaways:
-        if len(quiz) >= count:
-            break
         phrase = _salient_phrase(t, lang)
-        if not phrase or phrase not in t:
+        if not phrase or phrase not in t or phrase.lower() in used_phrases:
             continue
+        used_phrases.add(phrase.lower())
         blanked = t.replace(phrase, "______", 1)
         distractors = [p for p in salient_pool if p.lower() != phrase.lower()]
         random.shuffle(distractors)
-        options = [phrase] + distractors[:3]
-        options = list(dict.fromkeys(options))[:4]
+        options = list(dict.fromkeys([phrase] + distractors))[:4]
         if len(options) < 3:
             continue
         opts = options[:]
         random.shuffle(opts)
-        quiz.append({
-            "question": f"{T['blank_q']}“{blanked}”",
+        blank_items.append({
+            "question": f"{BLANK_STEM}\n\n“{blanked}”",
             "options": opts,
             "correct_answer": opts.index(phrase),
-            "explanation": T["exp_blank"],
+            "explanation": EXP_BLANK,
             "source_start": None,
             "source_end": None,
             "source_text": t,
@@ -210,6 +233,18 @@ def build_quiz_from_summary(
             "cognitive_level": "remember",
             "question_type": "fill_blank",
         })
+
+    # Interleave the two types for variety, then cap at count.
+    quiz: List[Dict[str, Any]] = []
+    qi = 0
+    while (ev_items or blank_items) and len(quiz) < count:
+        if qi % 2 == 0 and ev_items:
+            quiz.append(ev_items.pop(0))
+        elif blank_items:
+            quiz.append(blank_items.pop(0))
+        elif ev_items:
+            quiz.append(ev_items.pop(0))
+        qi += 1
 
     return quiz[:count]
 

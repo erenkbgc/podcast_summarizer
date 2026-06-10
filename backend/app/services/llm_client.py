@@ -1043,7 +1043,19 @@ class LLMClient:
             },
             {"role": "user", "content": prompt},
         ]
-        raw = self._parse_json_list(self.chat(quiz_messages, format="json", metadata={"task": "generate_quiz"}))
+        raw_response = self.chat(quiz_messages, format="json", metadata={"task": "generate_quiz"})
+        raw = self._parse_json_list(raw_response)
+        # Some models (e.g. Mistral) return an OBJECT keyed by "[Question 1]" etc.
+        # instead of a JSON array. Coerce object-of-questions into a list.
+        if not raw:
+            obj = self._parse_json_object(raw_response)
+            if isinstance(obj, dict):
+                # Either {"questions":[...]} / {"quiz":[...]} or {"Q1":{...}, ...}
+                listish = next((v for v in obj.values() if isinstance(v, list)), None)
+                if listish:
+                    raw = listish
+                else:
+                    raw = [v for v in obj.values() if isinstance(v, dict) and v.get("question")]
 
         normalized: List[Dict[str, Any]] = []
         seen_questions = set()
@@ -1052,7 +1064,7 @@ class LLMClient:
                 continue
             q = str(item.get("question", "")).strip()
             options = item.get("options") if isinstance(item.get("options"), list) else []
-            if not q or len(options) < 4:
+            if not q or len(options) < 3:
                 continue
             q_key = q.lower()
             if q_key in seen_questions:

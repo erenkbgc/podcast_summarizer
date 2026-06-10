@@ -12,7 +12,7 @@ requests
 feedparser
 spotipy
 whisperx
-qdrant-client
+qdrant-client==1.12.1
 langchain
 langchain-community
 langchain-ollama

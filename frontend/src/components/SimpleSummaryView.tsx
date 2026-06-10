@@ -41,9 +41,16 @@ export function SimpleSummaryView({ summary, status, progress, onSeek }: SimpleS
     );
   }
 
-  const insights = (summary.key_insights || []) as any[];
-  const actions = (summary.action_items || []) as any[];
-  const quotes = (summary.key_quotes || []) as any[];
+  const s = summary as any;
+  // Insights live in insight_attribution (rich: text + timestamp) or key_takeaways
+  // (plain strings); key_insights is a legacy field that may be empty.
+  const attribution = (s.insight_attribution || []) as any[];
+  const insights: any[] =
+    attribution.length > 0
+      ? attribution.map((a) => ({ text: a.insight, timestamp: a.start }))
+      : ((s.key_insights || s.key_takeaways || []) as any[]);
+  const actions = (s.action_items || []) as any[];
+  const quotes = (s.key_quotes || []) as any[];
 
   return (
     <div className="flex-1 overflow-y-auto bg-background">
@@ -71,17 +78,34 @@ export function SimpleSummaryView({ summary, status, progress, onSeek }: SimpleS
               {insights.slice(0, 6).map((insight, i) => {
                 const text = typeof insight === "string" ? insight : insight.text;
                 const why = typeof insight === "object" ? insight.why_matters : null;
+                const ts = typeof insight === "object" ? insight.timestamp : null;
                 return (
                   <div
                     key={i}
-                    className="p-5 bg-card rounded-2xl border border-border hover:border-primary/40 transition-colors"
+                    className="p-5 bg-card rounded-2xl border border-border hover:border-primary/40 transition-colors group"
                   >
-                    <p className="text-foreground leading-relaxed">{text}</p>
-                    {why && (
-                      <p className="text-sm text-muted-foreground mt-2 pl-3 border-l-2 border-primary/30">
-                        {why}
-                      </p>
-                    )}
+                    <div className="flex gap-3">
+                      <span className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center">
+                        {i + 1}
+                      </span>
+                      <div className="flex-1">
+                        <p className="text-foreground leading-relaxed">{text}</p>
+                        {why && (
+                          <p className="text-sm text-muted-foreground mt-2 pl-3 border-l-2 border-primary/30">
+                            {why}
+                          </p>
+                        )}
+                        {typeof ts === "number" && ts > 0 && (
+                          <button
+                            onClick={() => onSeek(ts)}
+                            className="mt-2 text-xs text-primary/70 hover:text-primary flex items-center gap-1 font-mono opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Clock className="w-3 h-3" />
+                            {formatTime(ts)}
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 );
               })}

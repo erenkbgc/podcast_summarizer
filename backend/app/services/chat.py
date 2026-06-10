@@ -867,16 +867,41 @@ INSTRUCTIONS:
             f"Context: {context}\n"
             'Respond in JSON list: ["Question 1?", "Question 2?", "Question 3?"]'
         )
+        questions: List[Any] = []
         try:
             res = self.llm.chat([{"role": "user", "content": prompt}], format="json", metadata={"task": "chat_suggestions"})
             questions = self.llm._parse_json_list(res)
-            return [{"text": q} for q in questions[:4] if str(q).strip()]
+            # Some models return {"questions": [...]} or {"Q1": "..."} instead of a list.
+            if not questions:
+                obj = self.llm._parse_json_object(res)
+                if isinstance(obj, dict):
+                    listish = next((v for v in obj.values() if isinstance(v, list)), None)
+                    questions = listish if listish else [v for v in obj.values() if isinstance(v, str)]
         except Exception:
-            return [
-                {"text": f"What are the key takeaways from {episode.title}?"},
-                {"text": "Who were the main speakers and what were their roles?"},
-                {"text": "Suggest some action items based on this discussion."},
-            ]
+            questions = []
+
+        def _wrap(qs: List[Any]) -> List[Dict[str, str]]:
+            out = []
+            for q in qs:
+                t = str(q).strip()
+                if t:
+                    out.append({"text": t, "context": "", "icon": "sparkles"})
+            return out[:4]
+
+        cleaned = _wrap(questions or [])
+        if cleaned:
+            return cleaned
+
+        # Fallback: pre-generated questions from the summary, else sensible defaults.
+        if summary and getattr(summary, "suggested_questions", None):
+            sq = _wrap(summary.suggested_questions)
+            if sq:
+                return sq
+        return _wrap([
+            "What are the key takeaways from this episode?",
+            "What were the most important points discussed?",
+            "Can you summarize the main arguments?",
+        ])
 
     def find_related_conversations(self, user_id: str, episode_id: int, top_k: int = 3) -> List[Dict[str, Any]]:
         episode = self.db.get(Episode, episode_id)
