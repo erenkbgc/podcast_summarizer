@@ -601,18 +601,29 @@ class LLMClient:
         center_weight = 1.0 - abs((idx / max(1, total - 1)) - 0.5) * 0.6
         return (0.25 * lexical_density) + punctuation_boost + novelty_boost + center_weight
 
-    def optimize_context_segments(self, transcript_segments: List[Dict[str, Any]], keep_ratio: float = 0.7) -> List[Dict[str, Any]]:
+    def optimize_context_segments(self, transcript_segments: List[Dict[str, Any]], max_chars: int = 28000) -> List[Dict[str, Any]]:
         """Content-aware chunking + importance scoring to reduce context loss."""
         if not transcript_segments:
             return []
-        keep = max(12, int(len(transcript_segments) * max(0.3, min(0.9, keep_ratio))))
+        
         scored = []
         for i, seg in enumerate(transcript_segments):
             score = self._segment_importance_score(seg, i, len(transcript_segments))
             scored.append((score, i, seg))
-        top = sorted(scored, key=lambda x: x[0], reverse=True)[:keep]
-        selected = sorted(top, key=lambda x: x[1])
-        return [s[2] for s in selected]
+            
+        top_scored = sorted(scored, key=lambda x: x[0], reverse=True)
+        
+        selected = []
+        current_chars = 0
+        for score, i, seg in top_scored:
+            text_len = len(str(seg.get("text", "")))
+            if current_chars + text_len > max_chars and len(selected) > 10:
+                break
+            selected.append((i, seg))
+            current_chars += text_len
+            
+        selected.sort(key=lambda x: x[0])
+        return [s[1] for s in selected]
 
     def detect_high_value_moments(self, transcript_segments: List[Dict[str, Any]], lang: str = "en") -> List[Dict[str, Any]]:
         """Detect emotional intensity, revelation, transition and CTA moments."""
@@ -944,44 +955,9 @@ class LLMClient:
                 "insight_density": "Light",
             }
 
-        # Context optimization: importance scoring + content-aware chunking.
-        optimized = self.optimize_context_segments(transcript_segments, keep_ratio=0.7)
-        sampled = optimized if optimized else transcript_segments
-        total_chars = sum(len(s.get("text", "")) for s in sampled)
-        if total_chars > 36000:
-            # Progressive summarization fallback to avoid heavy context loss.
-            chunk_size = max(18, int(math.sqrt(len(sampled))) * 4)
-            chunk_summaries: List[str] = []
-            for i in range(0, len(sampled), chunk_size):
-                chunk = sampled[i : i + chunk_size]
-                text = "\n".join(
-                    [f"[{self._safe_float(s.get('start')):.2f}] {s.get('speaker', 'Unknown')}: {s.get('text', '')}" for s in chunk]
-                )
-                chunk_prompt = (
-                    f"Summarize this podcast chunk in {self._get_lang_name(lang)} in 4 concise bullet points.\n"
-                    f"CRITICAL: All output MUST be in {self._get_lang_name(lang)}. Do NOT use any other language.\n"
-                    "Return plain text bullets only.\n"
-                    f"CHUNK:\n{text}\n"
-                )
-                try:
-                    chunk_summaries.append(
-                        str(
-                            self.chat(
-                                [
-                                    {"role": "system", "content": f"Return plain text bullets only. OUTPUT LANGUAGE: {self._get_lang_name(lang)} ONLY."},
-                                    {"role": "user", "content": chunk_prompt},
-                                ],
-                                metadata={"task": "progressive_chunk_summary"},
-                            )
-                        ).strip()
-                    )
-                except Exception:
-                    continue
-            sampled = [
-                {"start": float(i), "speaker": "ChunkSummary", "text": cs}
-                for i, cs in enumerate(chunk_summaries)
-                if cs
-            ] or sampled
+        # Context optimization: intelligently sample segments to fit in context window
+        # while preserving real quotes and speakers across the entire podcast.
+        sampled = self.optimize_context_segments(transcript_segments, max_chars=32000)
 
         formatted_text = "\n".join(
             [f"[{self._safe_float(s.get('start')):.2f}] {s.get('speaker', 'Unknown')}: {s.get('text', '')}" for s in sampled]
@@ -1323,7 +1299,7 @@ class LLMClient:
         return normalized
 
     def extract_glossary(self, transcript_text: str, lang: str = "en") -> List[Dict[str, Any]]:
-        text = (transcript_text or "")[:12000]
+        text = (transcript_text or "")[:16000]
         if not text:
             return []
 
@@ -1346,7 +1322,7 @@ class LLMClient:
         )
 
     def extract_verifiable_claims(self, summary_text: str, lang: str = "en") -> List[Dict[str, Any]]:
-        text = (summary_text or "").strip()[:8000]
+        text = (summary_text or "").strip()[:16000]
         if not text:
             return []
 

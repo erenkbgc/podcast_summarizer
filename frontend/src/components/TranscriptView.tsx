@@ -295,9 +295,8 @@ export function TranscriptView({ segments, currentTime, onSeek, speakerMap, stat
                                     isGroupActive ? "opacity-100" : (searchQuery ? "opacity-100" : "opacity-60 hover:opacity-100")
                                 )}
                             >
-                                {/* Speaker Header */}
                                 {group.speaker && (
-                                    <div className="flex items-center gap-3 mb-3 sticky top-20 z-10 w-max bg-background/90 backdrop-blur-md pr-4 py-1 rounded-full">
+                                    <div className="flex items-center gap-3 mb-3 w-max pr-4 py-1 rounded-full">
                                         <div className={cn(
                                             "w-8 h-8 rounded-full flex items-center justify-center text-xs font-black text-white uppercase shadow-lg",
                                             "bg-gradient-to-br",
@@ -311,11 +310,14 @@ export function TranscriptView({ segments, currentTime, onSeek, speakerMap, stat
                                         <span className="text-sm font-bold tracking-wide text-foreground/90">
                                             {resolveSpeakerName(group.speaker)}
                                         </span>
+                                        <span className="text-[10px] font-mono font-bold text-muted-foreground/60 bg-white/5 px-2 py-0.5 rounded-md border border-white/5">
+                                            {formatTime(group.start)}
+                                        </span>
                                     </div>
                                 )}
 
                                 {/* Sentences inside Group */}
-                                <div className="pl-11 space-y-3">
+                                <div className="pl-2 space-y-2">
                                     {group.items.map((segment) => {
                                         const globalIdx = segments.findIndex(s => s.start === segment.start);
                                         const isSentenceActive = currentTime >= segment.start && currentTime <= segment.end && !searchQuery;
@@ -329,23 +331,22 @@ export function TranscriptView({ segments, currentTime, onSeek, speakerMap, stat
                                                 data-match-idx={matchIdx >= 0 ? matchIdx : undefined}
                                                 onClick={() => onSeek(segment.start)}
                                                 className={cn(
-                                                    "group/sentence relative cursor-pointer p-3 -ml-3 rounded-xl transition-all duration-300",
+                                                    "group/sentence relative cursor-pointer p-2 rounded-xl transition-all duration-300 flex items-start gap-4",
                                                     isFocusedMatch ? "bg-yellow-500/10 border border-yellow-500/40 shadow-[0_0_15px_rgba(234,179,8,0.15)]" :
                                                     isSentenceActive ? "bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.1)] border border-primary/20" : "hover:bg-secondary/40 border border-transparent"
                                                 )}
                                             >
-                                                {/* Timestamp Side-marker */}
-                                                <div className={cn(
-                                                    "absolute -left-16 top-3.5 flex items-center gap-2 transition-all duration-300",
-                                                    isSentenceActive ? "opacity-100 translate-x-2" : "opacity-0 group-hover/sentence:opacity-50 -translate-x-2"
+                                                {/* Left column: Timestamp */}
+                                                <span className={cn(
+                                                    "font-mono text-[10px] font-bold tracking-tighter shrink-0 pt-1 w-10 text-right transition-all duration-300",
+                                                    isSentenceActive ? "text-primary opacity-100" : "text-muted-foreground opacity-30 group-hover/sentence:opacity-60"
                                                 )}>
-                                                    <span className="font-mono text-[10px] font-bold text-primary tracking-tighter">
-                                                        {formatTime(segment.start)}
-                                                    </span>
-                                                </div>
+                                                    {formatTime(segment.start)}
+                                                </span>
 
+                                                {/* Right column: Text */}
                                                 <p className={cn(
-                                                    "leading-relaxed transition-colors duration-300",
+                                                    "leading-relaxed transition-colors duration-300 flex-1",
                                                     isPanelMode ? "text-base" : "text-lg",
                                                     isSentenceActive ? "text-foreground font-medium" : "text-muted-foreground group-hover/sentence:text-foreground/90"
                                                 )}>

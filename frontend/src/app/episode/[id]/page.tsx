@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { IntelligencePanel } from '@/components/IntelligencePanel';
@@ -21,6 +21,7 @@ import { useAuth } from '@/context/AuthContext';
 
 import { usePodcastSocket } from '@/hooks/usePodcastSocket';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
+import { cn } from '@/lib/utils';
 
 export default function EpisodeWorkspace() {
     const { id } = useParams();
@@ -56,6 +57,21 @@ export default function EpisodeWorkspace() {
     const hasTranscript = Array.isArray(transcript?.segments) && transcript.segments.length > 0;
     const hasQuiz = Array.isArray(quizzes) && quizzes.length > 0;
 
+    const fetchData = useCallback(async () => {
+        try {
+            setError(null);
+            const epRes = await api.get(`/v1/episodes/${id}`, { timeout: REQUEST_TIMEOUTS.long });
+            setEpisode(epRes.data);
+        } catch (err: any) {
+            console.error('Failed to load episode', err);
+            if (err.response?.status === 404) {
+                setError('Episode not found');
+            } else {
+                setError('Failed to load episode');
+            }
+        }
+    }, [id]);
+
     useEffect(() => {
         if (!token && typeof window !== 'undefined' && !localStorage.getItem('podai_token')) {
             router.push('/login');
@@ -90,7 +106,10 @@ export default function EpisodeWorkspace() {
         if (!id || !token) return;
 
         const finalRefetch = currentStatus === 'completed' && !didFinalRefetch.current;
-        if (finalRefetch) didFinalRefetch.current = true;
+        if (finalRefetch) {
+            didFinalRefetch.current = true;
+            fetchData();
+        }
 
         const fetchPiece = async (key: string, url: string, setter: (data: any) => void) => {
             if (pieceInFlight.current[key]) return;
@@ -166,7 +185,7 @@ export default function EpisodeWorkspace() {
             });
         }
 
-    }, [currentStatus, id, token, hasTranscript, summary, chapters, hasQuiz, persona]);
+    }, [currentStatus, id, token, hasTranscript, summary, chapters, hasQuiz, persona, fetchData]);
 
     useEffect(() => {
         const t = searchParams.get('t');
@@ -177,21 +196,6 @@ export default function EpisodeWorkspace() {
             }
         }
     }, [searchParams]);
-
-    const fetchData = async () => {
-        try {
-            setError(null);
-            const epRes = await api.get(`/v1/episodes/${id}`, { timeout: REQUEST_TIMEOUTS.long });
-            setEpisode(epRes.data);
-        } catch (err: any) {
-            console.error('Failed to load episode', err);
-            if (err.response?.status === 404) {
-                setError('Episode not found');
-            } else {
-                setError('Failed to load episode');
-            }
-        }
-    };
 
     const handleSeek = (time: number) => {
         setCurrentTime(time);
@@ -326,6 +330,30 @@ export default function EpisodeWorkspace() {
                         <div className="hidden lg:flex items-center gap-1.5 bg-secondary/50 px-3 py-1.5 rounded-full border border-border">
                             <Sparkles size={14} className="text-primary" />
                             <span className="text-xs font-bold tracking-tight">AI Optimized</span>
+                        </div>
+                        {/* Lens Selector */}
+                        <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Lens:</span>
+                            <div className="flex bg-secondary/40 border border-border rounded-xl p-0.5">
+                                {[
+                                    { id: 'default', label: 'Default' },
+                                    { id: 'investor', label: 'Investor' },
+                                    { id: 'skeptic', label: 'Skeptic' }
+                                ].map(p => (
+                                    <button
+                                        key={p.id}
+                                        onClick={() => setPersona(p.id as any)}
+                                        className={cn(
+                                            "px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all",
+                                            persona === p.id 
+                                                ? "bg-primary text-white shadow-md shadow-primary/20" 
+                                                : "text-muted-foreground hover:text-foreground"
+                                        )}
+                                    >
+                                        {p.label}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                         {/* Share button */}
                         <button

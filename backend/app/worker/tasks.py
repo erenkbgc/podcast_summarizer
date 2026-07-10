@@ -769,8 +769,9 @@ def process_podcast(self, episode_id: int, audio_url: str, lang: str = "en", sum
         # transcript, and surfacing no insights at all is worse.
         grounded_takeaways = [a["insight"] for a in merged_attr]
         key_takeaways = grounded_takeaways if grounded_takeaways else [str(t).strip() for t in key_takeaways[:8] if str(t).strip()]
-        # Use full transcript text for glossary/quiz extraction
-        text_for_extracts = transcript_data.get("full_text", "")
+        # Use globally optimized transcript text for glossary/quiz extraction to prevent early truncation
+        optimized_extract_segments = llm.optimize_context_segments(transcript_data.get("segments", []), max_chars=16000)
+        text_for_extracts = "\n".join([s.get("text", "") for s in optimized_extract_segments])
 
         action_items_structured = summary_data.get("action_items_structured")
         if not isinstance(action_items_structured, list):

@@ -29,6 +29,8 @@ export function usePodcastSocket(episodeId: string | number) {
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const retryCountRef = useRef(0);
 
+    const connectRef = useRef<() => void>(() => {});
+
     const getWsUrl = useCallback(() => {
         const base = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/status';
         return base.replace(/([^:]\/)\/+/g, '$1');
@@ -91,7 +93,7 @@ export function usePodcastSocket(episodeId: string | number) {
 
                 reconnectTimerRef.current = setTimeout(() => {
                     if (socketRef.current?.readyState === WebSocket.CLOSED) {
-                        connect();
+                        connectRef.current();
                     }
                 }, delay);
             };
@@ -105,6 +107,11 @@ export function usePodcastSocket(episodeId: string | number) {
             console.error('[PodAI] Failed to create WebSocket:', err);
         }
     }, [episodeId, token, user, getWsUrl]);
+
+    // Keep connectRef up to date with the latest connect function
+    useEffect(() => {
+        connectRef.current = connect;
+    }, [connect]);
 
     useEffect(() => {
         retryCountRef.current = 0;

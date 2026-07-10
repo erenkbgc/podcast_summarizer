@@ -20,23 +20,27 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-    const [user, setUser] = useState<User | null>(null);
-    const [token, setToken] = useState<string | null>(null);
-    const [refreshToken, setRefreshToken] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const router = useRouter();
-
-    useEffect(() => {
-        const savedToken = localStorage.getItem('podai_token');
-        const savedRefreshToken = localStorage.getItem('podai_refresh_token');
-        const savedUser = localStorage.getItem('podai_user');
-        if (savedToken && savedUser) {
-            setToken(savedToken);
-            setRefreshToken(savedRefreshToken);
-            setUser(JSON.parse(savedUser));
+    const [user, setUser] = useState<User | null>(() => {
+        if (typeof window !== 'undefined') {
+            const u = localStorage.getItem('podai_user');
+            try { return u ? JSON.parse(u) : null; } catch { return null; }
         }
-        setIsLoading(false);
-    }, []);
+        return null;
+    });
+    const [token, setToken] = useState<string | null>(() => {
+        if (typeof window !== 'undefined') {
+            return localStorage.getItem('podai_token');
+        }
+        return null;
+    });
+    const [refreshToken, setRefreshToken] = useState<string | null>(() => {
+        if (typeof window !== 'undefined') {
+            return localStorage.getItem('podai_refresh_token');
+        }
+        return null;
+    });
+    const [isLoading] = useState(false);
+    const router = useRouter();
 
     useEffect(() => {
         const handleAuthExpired = () => {

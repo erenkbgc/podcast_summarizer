@@ -22,6 +22,7 @@ export default function NeuralIngestHome() {
   const router = useRouter();
   const [url, setUrl] = useState('');
   const [language, setLanguage] = useState('en');
+  const [summaryType, setSummaryType] = useState('default');
   const [isIngesting, setIsIngesting] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
@@ -42,7 +43,7 @@ export default function NeuralIngestHome() {
       const res = await api.post('/v1/episodes/ingest', {
         url,
         preferred_lang: language,
-        summary_type: 'default'
+        summary_type: summaryType
       });
       router.push(`/episode/${res.data.id}`);
     } catch (error: any) {
@@ -179,11 +180,11 @@ export default function NeuralIngestHome() {
                   initial={{ height: 0, opacity: 0 }}
                   animate={{ height: 'auto', opacity: 1 }}
                   exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden flex flex-wrap justify-center gap-4 py-2"
+                  className="overflow-hidden flex flex-col gap-6 items-center py-2 w-full"
                 >
-                  <div className="flex flex-col gap-2">
-                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2">Output Language</label>
-                    <div className="flex bg-white/5 border border-white/10 rounded-2xl p-1">
+                  <div className="flex flex-col gap-2 w-full max-w-md">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2 text-center">Output Language</label>
+                    <div className="flex bg-white/5 border border-white/10 rounded-2xl p-1 justify-center w-full">
                       {[
                         { id: 'en', label: 'English', icon: '/flag_icons/english.webp' },
                         { id: 'tr', label: 'Turkish', icon: '/flag_icons/turkish.png' },
@@ -192,10 +193,32 @@ export default function NeuralIngestHome() {
                       ].map(lang => (
                         <button
                           key={lang.id}
+                          type="button"
                           onClick={() => setLanguage(lang.id)}
-                          className={`px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 ${language === lang.id ? 'bg-white/10 text-white' : 'text-gray-500 hover:text-white'}`}
+                          className={`flex-1 px-4 py-2 rounded-xl text-xs transition-all flex items-center justify-center gap-2 ${language === lang.id ? 'bg-white/10 text-white' : 'text-gray-500 hover:text-white'}`}
                         >
-                          <img src={lang.icon} alt={lang.label} className="w-5 h-4 object-cover rounded-sm" /> {lang.label}
+                          <img src={lang.icon} alt={lang.label} className="w-4 h-3 object-cover rounded-sm" /> {lang.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 w-full max-w-md">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2 text-center">Summary Type</label>
+                    <div className="flex bg-white/5 border border-white/10 rounded-2xl p-1 justify-center w-full">
+                      {[
+                        { id: 'default', label: 'Default' },
+                        { id: 'technical', label: 'Technical' },
+                        { id: 'conversational', label: 'Conversational' },
+                        { id: 'executive', label: 'Executive' }
+                      ].map(type => (
+                        <button
+                          key={type.id}
+                          type="button"
+                          onClick={() => setSummaryType(type.id)}
+                          className={`flex-1 px-3 py-2 rounded-xl text-xs transition-all flex items-center justify-center capitalize ${summaryType === type.id ? 'bg-white/10 text-white' : 'text-gray-500 hover:text-white'}`}
+                        >
+                          {type.label}
                         </button>
                       ))}
                     </div>

@@ -15,6 +15,19 @@
 
 </div>
 
+### 🖥️ Workspace Dashboard & Universal Knowledge Graph
+
+<div align="center">
+  <img src="frontend/public/screenshots/dashboard.jpg" width="48%" alt="PodAI Workspace Dashboard" />
+  <img src="frontend/public/screenshots/graph.jpg" width="48%" alt="PodAI Universal Knowledge Graph" />
+</div>
+
+<div align="center">
+  <video src="frontend/public/videos/demo.mp4" controls="controls" muted="muted" width="800">
+    Your browser does not support the video tag.
+  </video>
+</div>
+
 ---
 
 PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RSS feed — and produces a full intelligence layer: speaker-tagged transcripts, multi-perspective summaries, auto-generated chapters, a technical glossary, evidence-grounded quizzes, and a RAG-powered chat interface that lets you query the episode like a document.

@@ -10,6 +10,7 @@ import dynamic from "next/dynamic";
 import { Summary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { TopicTimeline } from "./TopicTimeline";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface Props {
   summary: Summary | null;
@@ -38,6 +39,12 @@ function formatTime(seconds: number): string {
 }
 
 type TabId = "overview" | "analytics" | "deepdive" | "notes";
+
+const SectionTitle = ({ icon: Icon, children, color = "text-primary" }: any) => (
+  <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
+    <Icon className={cn("w-4 h-4", color)} /> {children}
+  </h3>
+);
 
 export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap, episodeId, currentTime }: Props) {
   const [tab, setTab] = useState<TabId>("overview");
@@ -143,11 +150,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
     }
   };
 
-  const SectionTitle = ({ icon: Icon, children, color = "text-primary" }: any) => (
-    <h3 className="text-sm font-black uppercase tracking-[0.2em] text-muted-foreground flex items-center gap-2">
-      <Icon className={cn("w-4 h-4", color)} /> {children}
-    </h3>
-  );
+
 
   return (
     <div className="flex-1 overflow-y-auto bg-background" id="summary-print-root">
@@ -175,7 +178,16 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-8 py-10 space-y-12 pb-16">
+      <div className="max-w-4xl mx-auto px-8 py-10 pb-16 overflow-hidden">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={tab}
+            initial={{ opacity: 0, y: 15, filter: "blur(4px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, y: -15, filter: "blur(4px)" }}
+            transition={{ duration: 0.25, ease: "easeInOut" }}
+            className="space-y-12"
+          >
         {/* ============ OVERVIEW ============ */}
         {tab === "overview" && (
           <>
@@ -584,6 +596,8 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
             )}
           </div>
         )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   );
