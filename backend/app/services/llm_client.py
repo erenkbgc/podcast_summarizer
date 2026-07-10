@@ -740,6 +740,13 @@ class LLMClient:
         key_insights = ensure_list_of_strings(data.get("key_insights"))
         suggested_questions = ensure_list_of_strings(data.get("suggested_questions"))
 
+        if not key_insights:
+            # Small models sometimes omit key_insights entirely; fall back to the
+            # most substantial sentences of the summary so the UI is never empty.
+            src = re.sub(r"[#*_]+", " ", str(data.get("global_summary", "")))
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", src)]
+            key_insights = [s for s in sentences if 40 <= len(s) <= 240][:4]
+
         key_quotes_raw = data.get("key_quotes")
         key_quotes: List[Dict[str, Any]] = []
         if isinstance(key_quotes_raw, list):
@@ -1053,7 +1060,8 @@ class LLMClient:
 
             formatted_text = "\n".join([f"[{self._safe_float(s.get('start')):.2f}] {s.get('text', '')}" for s in chunk_segments])
             prompt = (
-                f"Identify 2-4 major chapter transitions in this podcast slice ({chunk_start:.0f}s to {chunk_end:.0f}s).\n"
+                f"Identify 3-6 major chapter transitions in this podcast slice ({chunk_start:.0f}s to {chunk_end:.0f}s).\n"
+                "Chapters must COVER THE WHOLE SLICE from its beginning to its end, not just the first minutes.\n"
                 f"All text MUST be in {full_lang}.\n\n"
                 "RULES:\n"
                 "- title: A natural, readable PHRASE (3-7 words). Must read like a headline, NOT a list of keywords.\n"

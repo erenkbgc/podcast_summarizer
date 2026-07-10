@@ -49,14 +49,27 @@ def _percentile(values, q: float) -> float:
     return xs[lo] * (1 - weight) + xs[hi] * weight
 
 
-def _extract_topic_label(text: str, stop_words: set, fallback: str) -> str:
+def _extract_topic_label(text: str, stop_words: set, fallback: str, used_words: set | None = None) -> str:
     words = re.findall(r"\b[\wçğıöşüÇĞİÖŞÜ]{4,}\b", (text or "").lower())
     filtered = [w for w in words if w not in stop_words]
     if not filtered:
         return fallback
     from collections import Counter
-    top_words = Counter(filtered).most_common(3)
-    return " / ".join([w[0].capitalize() for w in top_words])
+    # Pick distinct word stems ("iran" swallows "iranian") and skip words already
+    # used in earlier labels so consecutive chapters don't all read the same.
+    picked: list = []
+    for w, _count in Counter(filtered).most_common(12):
+        stem = w[:5]
+        if any(p[:5] == stem for p in picked):
+            continue
+        if used_words and any(u[:5] == stem for u in used_words):
+            continue
+        picked.append(w)
+        if len(picked) == 3:
+            break
+    if not picked:
+        return fallback
+    return " / ".join(w.capitalize() for w in picked)
 
 
 def _segment_topics_by_embeddings(
@@ -215,6 +228,7 @@ def _normalize_coverage_chapters(raw_chapters, topic_transitions, segments, stop
         cleaned.append(duration)
 
     chapters = []
+    used_label_words: set = set()
     topic_colors = ["#3E5BFF", "#F97316", "#22C55E", "#A855F7", "#E11D48", "#14B8A6"]
     for idx in range(len(cleaned) - 1):
         start = cleaned[idx]
@@ -239,9 +253,10 @@ def _normalize_coverage_chapters(raw_chapters, topic_transitions, segments, stop
                 break
 
         interval_text = _text_between(segments, start, end)
-        title = str((raw or {}).get("title") or (topic or {}).get("topic") or "").strip()
+        title = str((raw or {}).get("title") or "").strip()
         if not title:
-            title = _extract_topic_label(interval_text, stop_words, f"Part {idx + 1}")
+            title = _extract_topic_label(interval_text, stop_words, f"Part {idx + 1}", used_words=used_label_words)
+            used_label_words.update(re.findall(r"[\wçğıöşüÇĞİÖŞÜ]{4,}", title.lower()))
 
         summary = str((raw or {}).get("summary") or "").strip()
         if not summary:
@@ -256,7 +271,15 @@ def _normalize_coverage_chapters(raw_chapters, topic_transitions, segments, stop
             "color": (topic or {}).get("color") or topic_colors[idx % len(topic_colors)],
         })
 
-    return chapters
+    # Merge consecutive chapters that ended up with the same title so filler
+    # intervals collapse into one chapter instead of repeating.
+    merged: list = []
+    for ch in chapters:
+        if merged and ch["title"] == merged[-1]["title"]:
+            merged[-1]["end_timestamp"] = ch["end_timestamp"]
+            continue
+        merged.append(ch)
+    return merged
 
 def update_episode_status(db, episode, status, progress=None):
     episode.status = status
@@ -741,8 +764,11 @@ def process_podcast(self, episode_id: int, audio_url: str, lang: str = "en", sum
                 "confidence": float(entry.get("confidence", 0.0)),
             })
 
-        # If we cannot ground a takeaway, don't surface it.
-        key_takeaways = [a["insight"] for a in merged_attr]
+        # Prefer evidence-grounded takeaways, but keep the originals when grounding
+        # finds nothing — e.g. a Turkish summary can't token-match an English
+        # transcript, and surfacing no insights at all is worse.
+        grounded_takeaways = [a["insight"] for a in merged_attr]
+        key_takeaways = grounded_takeaways if grounded_takeaways else [str(t).strip() for t in key_takeaways[:8] if str(t).strip()]
         # Use full transcript text for glossary/quiz extraction
         text_for_extracts = transcript_data.get("full_text", "")
 
