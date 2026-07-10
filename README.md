@@ -15,6 +15,12 @@
 
 </div>
 
+---
+
+PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RSS feed — and produces a full intelligence layer: speaker-tagged transcripts, multi-perspective summaries, auto-generated chapters, a technical glossary, evidence-grounded quizzes, and a RAG-powered chat interface that lets you query the episode like a document.
+
+---
+
 ### 🖥️ Workspace Dashboard & Universal Knowledge Graph
 
 <div align="center">
@@ -23,14 +29,17 @@
 </div>
 
 <div align="center">
-  <video src="frontend/public/videos/demo.mp4" controls="controls" muted="muted" width="800">
-    Your browser does not support the video tag.
-  </video>
+  <img src="frontend/public/screenshots/episode.jpg" width="48%" alt="PodAI Episode Intelligence View" />
+  <img src="frontend/public/screenshots/search.jpg" width="48%" alt="PodAI Semantic Search" />
 </div>
 
----
+### 🎬 Product Demo
 
-PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RSS feed — and produces a full intelligence layer: speaker-tagged transcripts, multi-perspective summaries, auto-generated chapters, a technical glossary, evidence-grounded quizzes, and a RAG-powered chat interface that lets you query the episode like a document.
+<div align="center">
+  <video src="frontend/public/videos/demo.mp4" controls="controls" muted="muted" width="800">
+    Your browser does not support the video tag. <a href="frontend/public/videos/demo.mp4">Download the demo video</a>.
+  </video>
+</div>
 
 ---
 
@@ -43,6 +52,7 @@ PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RS
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
+- [Security](#security)
 - [API Overview](#api-overview)
 - [Project Structure](#project-structure)
 
@@ -242,6 +252,7 @@ Edit `.env` — the minimum required variables:
 ```env
 SECRET_KEY=your-secret-key-here          # Generate: openssl rand -hex 32
 POSTGRES_PASSWORD=changeme
+FLOWER_PASSWORD=change_me_in_production  # Celery dashboard
 
 # Choose ONE provider (or set up a fallback chain)
 LLM_PROVIDER=ollama                       # ollama | openai | anthropic
@@ -309,7 +320,7 @@ SUMMARY_MODE=tldr            # tldr (fast, focused) | standard | deep
 TRANSLATE_TRANSCRIPT=false   # translate the full transcript to the target language
                              # (slow: dozens of extra LLM calls; summaries are
                              # always generated in the target language regardless)
-FACT_CHECK_PROVIDER=none     # none | searxng (needs a SearxNG JSON API instance)
+FACT_CHECK_PROVIDER=none     # none | searxng (needs your own SearxNG instance)
 
 # Rate limiting
 RATE_LIMIT_AUTH=10/minute
@@ -324,6 +335,36 @@ CACHE_EPISODE_TTL_SEC=300
 DB_POOL_SIZE=10
 DB_MAX_OVERFLOW=20
 ```
+
+---
+
+## Security
+
+PodAI applies defense-in-depth across every layer:
+
+### API Layer
+- **JWT authentication** on all endpoints (access token: 60 min, refresh: 7 days)
+- **Rate limiting** via SlowAPI backed by Redis (per-route, per-IP)
+- **CORS** restricted to configured origins only — no wildcard in production
+- **Security headers** on every response: `Strict-Transport-Security`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy`
+- **`/metrics` endpoint** restricted to loopback/private IP addresses only
+
+### Download & SSRF Protection
+- **Domain allowlist** — only approved podcast CDNs and directories may be fetched
+- **Private IP check** — loopback, link-local, and RFC-1918 addresses are blocked before and after redirects
+- **Redirect verification** — final redirect destination is re-checked for SSRF
+- **Max download size** enforced during streaming (default 500 MB)
+
+### Infrastructure
+- **All infrastructure ports** (PostgreSQL, Redis, Qdrant, Ollama, Flower) are bound to `127.0.0.1` — not exposed to external interfaces
+- **Flower dashboard** protected by HTTP Basic Auth (`FLOWER_PASSWORD` env var)
+- **`DEBUG=false`** by default; must be explicitly enabled
+- **`SECRET_KEY`** validated to be at least 32 characters at startup
+
+### Secrets & Configuration
+- `.env` is in `.gitignore` — never committed
+- `.env.example` contains safe placeholder values, no real secrets
+- Database files (`*.db`, `*.sqlite`) excluded from version control
 
 ---
 

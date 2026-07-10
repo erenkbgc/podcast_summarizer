@@ -178,8 +178,17 @@ async def health_check():
 
 
 @app.get("/metrics", include_in_schema=False)
-async def metrics():
-    """Prometheus metrics scrape endpoint."""
+async def metrics(request: Request):
+    """Prometheus metrics scrape endpoint — restricted to loopback/internal access."""
+    client_host = request.client.host if request.client else ""
+    # Allow only loopback (localhost) and RFC-1918 private addresses
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(client_host)
+        if not (addr.is_loopback or addr.is_private):
+            raise HTTPException(status_code=403, detail="Forbidden")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Forbidden")
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 

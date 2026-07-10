@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session, joinedload
 import json
+import logging
 from app.api.v1.deps import get_db, get_current_user
 from app.core.cache import cache_get_json, cache_set_json, episode_cache_key, invalidate_episode_cache
 from app.core.config import settings
@@ -22,6 +23,7 @@ from app.services.chat import ChatService
 from app.worker.tasks import process_podcast
 from typing import Dict, Any, List, Optional
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Re-defining this for compatibility or replacing usages
@@ -721,7 +723,7 @@ async def chat_with_podcast_stream(
         except ValueError as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         except Exception as e:
-            print(f"Stream error: {str(e)}")
+            logger.error("Stream error in chat: %s", e, exc_info=True)
             yield f"data: {json.dumps({'error': 'Chat streaming failed'})}\n\n"
 
     return StreamingResponse(
@@ -755,7 +757,7 @@ async def chat_with_podcast(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"Chat error: {str(e)}")
+        logger.error("Chat error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Chat processing failed")
 
 
@@ -797,7 +799,7 @@ async def get_chat_history(
         )
         return history
     except Exception as e:
-        print(f"History error: {str(e)}")
+        logger.error("Chat history error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to retrieve chat history")
 
 
@@ -939,10 +941,7 @@ async def delete_episode(episode_id: int, db: Session = Depends(get_db), user_id
         invalidate_episode_cache(user_id=user_id, episode_id=episode_id)
     except Exception as e:
         db.rollback()
-        print(f"Database deletion failed: {e}")
-        # Log the full error for debugging
-        import traceback
-        traceback.print_exc()
+        logger.error("Database deletion failed for episode %s: %s", episode_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to clean up database records: {str(e)}")
     
     return {"status": "success", "message": f"Episode {episode_id} and all related intelligence deleted"}

@@ -49,6 +49,22 @@ Thumbs.db
 *.mp3
 *.m4a
 *.wav
-*.mp4
+*.webm
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Frontend build artifacts
+frontend/.next/
+frontend/tsconfig.tsbuildinfo
+frontend/node_modules/
+
+# Development/internal text data
+frontend/closings.txt
+frontend/openings.txt
+
 backend/.cache
 backend/.coverage
+backend/pytest_cache/

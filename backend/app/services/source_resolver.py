@@ -1,9 +1,12 @@
 import requests
 import feedparser
 import re
+import logging
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 class SourceResolver:
     @staticmethod
@@ -41,7 +44,7 @@ class SourceResolver:
 
     @staticmethod
     def _resolve_spotify(url: str) -> Tuple[Optional[str], Optional[dict]]:
-        print(f"Resolving Spotify: {url}")
+        logger.info("Resolving Spotify: %s", url)
         
         # Try using Spotify API if credentials are provided
         if settings.SPOTIFY_CLIENT_ID and settings.SPOTIFY_CLIENT_SECRET:
@@ -63,10 +66,10 @@ class SourceResolver:
                     episode_title = ep.get("name")
                     show_name = ep.get("show", {}).get("name")
                     
-                    print(f"Spotify API success: Title='{episode_title}', Show='{show_name}'")
+                    logger.info("Spotify API success: Title='%s', Show='%s'", episode_title, show_name)
                     return SourceResolver._search_itunes(episode_title, show_name)
             except Exception as e:
-                print(f"Spotify API resolution failed: {e}")
+                logger.warning("Spotify API resolution failed: %s", e)
         
         # Common headers for resolution
         headers = {
@@ -90,7 +93,7 @@ class SourceResolver:
                     # which is smart enough to handle "Title - Show" or "Show - Title"
                     pass
                 
-                print(f"Spotify OEmbed success: Title='{episode_title}'")
+                logger.info("Spotify OEmbed success: Title='%s'", episode_title)
                 audio_url, itunes_meta = SourceResolver._search_itunes(episode_title, show_name)
                 
                 if itunes_meta:
@@ -99,12 +102,12 @@ class SourceResolver:
                         itunes_meta["image_url"] = data.get("thumbnail_url")
                     return audio_url, itunes_meta
         except Exception as e:
-            print(f"Spotify OEmbed failed: {e}")
+            logger.warning("Spotify OEmbed failed: %s", e)
 
         # Fallback to scraping (more robust headers)
         try:
             response = requests.get(url, headers=headers, timeout=10)
-            print(f"Spotify scrape response status: {response.status_code}")
+            logger.info("Spotify scrape response status: %d", response.status_code)
             
             # Find og:title (example: "AI in 2025: From Agents to Factories - Ep. 282")
             title_match = re.search(r'<meta property="og:title" content="([^"]+)"', response.text)
@@ -120,14 +123,14 @@ class SourceResolver:
                     elif "from " in desc_text:
                         show_name = desc_text.split("from ")[-1].split(" on Spotify")[0].strip()
                 
-                print(f"Scraping success: Title='{full_title}', Show='{show_name}'")
+                logger.info("Scraping success: Title='%s', Show='%s'", full_title, show_name)
                 return SourceResolver._search_itunes(full_title, show_name)
             else:
-                print(f"Scraping failed: Could not find og:title meta tag. Text length: {len(response.text)}")
+                logger.warning("Scraping failed: Could not find og:title meta tag. Text length: %d", len(response.text))
                 if "Verify you're a human" in response.text:
-                    print("Spotify blocked us with a bot check (Verify you're a human)")
+                    logger.warning("Spotify blocked us with a bot check")
         except Exception as e:
-            print(f"Spotify scraping failed: {e}")
+            logger.warning("Spotify scraping failed: %s", e)
         
         return None, None
 
@@ -168,28 +171,28 @@ class SourceResolver:
     def _search_itunes(episode_title: str, show_name: str) -> Tuple[Optional[str], Optional[dict]]:
         # Strategy 1: Search by show + title
         search_query = f"{show_name} {episode_title}"
-        print(f"Searching iTunes (Strategy 1): {search_query}")
+        logger.info("Searching iTunes (Strategy 1): %s", search_query)
         data = SourceResolver._itunes_get({"term": search_query, "entity": "podcastEpisode", "limit": 1})
 
         if data["resultCount"] > 0:
             episode = data["results"][0]
             if SourceResolver._titles_match(episode_title, episode.get("trackName", "")):
-                print(f"Found on iTunes (S1): {episode.get('trackName')}")
+                logger.info("Found on iTunes (S1): %s", episode.get('trackName'))
                 return SourceResolver._format_itunes_result(episode)
-            print(f"S1 result rejected (title mismatch): {episode.get('trackName')}")
+            logger.debug("S1 result rejected (title mismatch): %s", episode.get('trackName'))
 
         # Strategy 2: Search by title only (then by simplified title)
         for attempt_title in dict.fromkeys([episode_title, SourceResolver._simplify_title(episode_title)]):
             if not attempt_title:
                 continue
-            print(f"Searching iTunes (Strategy 2): {attempt_title}")
+            logger.info("Searching iTunes (Strategy 2): %s", attempt_title)
             data = SourceResolver._itunes_get({"term": attempt_title, "entity": "podcastEpisode", "limit": 5})
             for episode in data.get("results", []):
                 if SourceResolver._titles_match(episode_title, episode.get("trackName", "")):
-                    print(f"Found on iTunes (S2): {episode.get('trackName')}")
+                    logger.info("Found on iTunes (S2): %s", episode.get('trackName'))
                     return SourceResolver._format_itunes_result(episode)
             if data.get("resultCount", 0) > 0:
-                print("S2 results rejected (no title match)")
+                logger.debug("S2 results rejected (no title match)")
 
         # Strategy 3: Find the SHOW on iTunes, then locate the episode inside its
         # RSS feed (most reliable when episode-level search misses).
@@ -197,7 +200,7 @@ class SourceResolver:
         if audio:
             return audio, meta
 
-        print("No results found on iTunes")
+        logger.warning("No results found on iTunes for: %s", episode_title)
         return None, None
 
     @staticmethod
@@ -241,7 +244,7 @@ class SourceResolver:
                 if not audio_href and getattr(best, "enclosures", None):
                     audio_href = best.enclosures[0].get("href")
                 if audio_href:
-                    print(f"Found via show feed (score {best_score:.2f}): {best.title}")
+                    logger.info("Found via show feed (score %.2f): %s", best_score, best.title)
                     image = show.get("artworkUrl600") or show.get("artworkUrl100")
                     return audio_href, {
                         "title": getattr(best, "title", episode_title),

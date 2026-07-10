@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     OLLAMA_URL: str = "http://localhost:11434"
     QDRANT_URL: str = "http://localhost:6333"
-    DEBUG: bool = True
+    DEBUG: bool = False
     LLM_PROVIDER: str = "ollama"  # ollama|openai|anthropic
     OLLAMA_MODEL: str = "llama3"
     OPENAI_MODEL: str = "gpt-4o-mini"

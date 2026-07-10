@@ -3,9 +3,12 @@ import os
 import uuid
 import socket
 import ipaddress
+import logging
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 class Downloader:
     def __init__(self, download_dir: str = "data/audio"):
@@ -44,7 +47,7 @@ class Downloader:
         try:
             parsed = urlparse(url)
             if parsed.scheme not in ("http", "https"):
-                print("Download blocked: invalid URL scheme.")
+                logger.warning("Download blocked: invalid URL scheme.")
                 return None
 
             host = parsed.hostname or ""
@@ -54,12 +57,12 @@ class Downloader:
             # Always check domain unless explicitly allowed via unrestricted setting
             from app.core.config import settings
             if not self._allowed_domain(url):
-                print(f"Download blocked: domain not allow-listed. host={host}")
+                logger.warning("Download blocked: domain not allow-listed. host=%s", host)
                 return None
 
             # Check for private host
             if self._is_private_host(host):
-                print(f"Download blocked: private/loopback host detected for {host}")
+                logger.warning("Download blocked: private/loopback host detected for %s", host)
                 return None
 
             headers = {
@@ -91,13 +94,13 @@ class Downloader:
             # Re-verify the FINAL URL after redirects
             final_host = urlparse(response.url).hostname or ""
             if self._is_private_host(final_host):
-                 print(f"Download blocked: final host {final_host} is private.")
+                 logger.warning("Download blocked: final host %s is private.", final_host)
                  return None
 
             if response.headers.get("Content-Length"):
                 size = int(response.headers.get("Content-Length"))
                 if size > max_bytes:
-                    print("Download blocked: file too large.")
+                    logger.warning("Download blocked: file too large.")
                     return None
             
             # Generate a unique filename
@@ -115,7 +118,7 @@ class Downloader:
                         f.write(chunk)
                         total += len(chunk)
                         if total > max_bytes:
-                            print("Download aborted: size limit exceeded.")
+                            logger.warning("Download aborted: size limit exceeded.")
                             f.close()
                             if os.path.exists(file_path):
                                 os.remove(file_path)
@@ -123,5 +126,5 @@ class Downloader:
             
             return str(file_path)
         except Exception as e:
-            print(f"Download failed: {e}")
+            logger.error("Download failed: %s", e)
             return None
