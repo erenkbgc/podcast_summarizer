@@ -15,30 +15,23 @@
 
 </div>
 
----
-
 PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RSS feed — and produces a full intelligence layer: speaker-tagged transcripts, multi-perspective summaries, auto-generated chapters, a technical glossary, evidence-grounded quizzes, and a RAG-powered chat interface that lets you query the episode like a document.
 
 ---
 
-### 🖥️ Workspace Dashboard & Universal Knowledge Graph
-
 <div align="center">
-  <img src="frontend/public/screenshots/dashboard.jpg" width="48%" alt="PodAI Workspace Dashboard" />
-  <img src="frontend/public/screenshots/graph.jpg" width="48%" alt="PodAI Universal Knowledge Graph" />
+  <img src="frontend/public/screenshots/dashboard.jpg" width="49%" alt="PodAI Dashboard" />
+  <img src="frontend/public/screenshots/episode.jpg" width="49%" alt="PodAI Episode View" />
+  <img src="frontend/public/screenshots/graph.jpg" width="49%" alt="PodAI Knowledge Graph" />
+  <img src="frontend/public/screenshots/search.jpg" width="49%" alt="PodAI Semantic Search" />
 </div>
 
 <div align="center">
-  <img src="frontend/public/screenshots/episode.jpg" width="48%" alt="PodAI Episode Intelligence View" />
-  <img src="frontend/public/screenshots/search.jpg" width="48%" alt="PodAI Semantic Search" />
-</div>
 
-### 🎬 Product Demo
+### 🎬 [▶ Watch the Full Demo](https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4)
 
-<div align="center">
-  <video src="https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4" controls="controls" muted="muted" width="800">
-    <a href="https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4">▶️ Watch the Demo</a>
-  </video>
+[![Demo Preview](frontend/public/screenshots/dashboard.jpg)](https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4)
+
 </div>
 
 ---
@@ -48,11 +41,9 @@ PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RS
 - [Features](#features)
 - [Architecture](#architecture)
 - [Processing Pipeline](#processing-pipeline)
-- [User Journey](#user-journey)
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
-- [Security](#security)
 - [API Overview](#api-overview)
 - [Project Structure](#project-structure)
 
@@ -87,32 +78,32 @@ graph TB
 
     subgraph Gateway["🔀 API Gateway"]
         API[FastAPI :8000]
-        WS_SERVER[WebSocket /ws/status]
+        WS_SERVER["WebSocket /ws/status"]
         RATE[Rate Limiter]
         AUTH[JWT Auth]
     end
 
     subgraph Workers["⚙️ Celery Workers"]
-        HIGH[worker-high\nchat · tagging]
-        LOW[worker-low\ntranscription · analysis]
+        HIGH["worker-high · chat · tagging"]
+        LOW["worker-low · transcription · analysis"]
     end
 
     subgraph AI["🧠 AI Layer"]
-        WHISPER[WhisperX\nTranscription + Diarization]
-        LLM[LLM Client\nOllama / OpenAI / Anthropic]
-        EMBED[Sentence Transformers\nEmbeddings]
+        WHISPER["WhisperX · Transcription + Diarization"]
+        LLM["LLM Client · Ollama / OpenAI / Anthropic"]
+        EMBED["Sentence Transformers · Embeddings"]
     end
 
     subgraph Storage["🗄️ Storage"]
-        PG[(PostgreSQL\nEpisodes · Users · Summaries)]
-        REDIS[(Redis\nCache · Celery Broker)]
-        QDRANT[(Qdrant\nVector Store)]
-        FS[File System\nAudio Files]
+        PG[("PostgreSQL · Episodes · Users")]
+        REDIS[("Redis · Cache · Celery Broker")]
+        QDRANT[("Qdrant · Vector Store")]
+        FS["File System · Audio Files"]
     end
 
     UI -->|REST + Auth| API
     UI -->|Real-time status| WS_CLIENT
-    WS_CLIENT <-->|wss://| WS_SERVER
+    WS_CLIENT <-->|wss| WS_SERVER
     API --> RATE --> AUTH
     API -->|Enqueue tasks| REDIS
     REDIS -->|Dispatch| HIGH
@@ -132,102 +123,36 @@ graph TB
 
 ## Processing Pipeline
 
-When a URL is submitted, a deterministic 10-step pipeline runs asynchronously:
+When a URL is submitted, a deterministic pipeline runs asynchronously and streams progress to the browser over WebSocket:
 
 ```mermaid
 flowchart LR
-    A([🔗 URL]) --> B[Resolve Source\nSpotify · Apple · RSS]
-    B --> C[Download Audio]
-    C --> D[WhisperX\nTranscription]
-    D --> E[Speaker\nDiarization]
-    E --> F[Speaker Name\nInference via LLM]
-    F --> G[Summarization\n4 layers]
-    G --> H[Chapter\nGeneration]
-    H --> I[Glossary +\nQuiz Generation]
-    I --> J[Vector\nEmbedding → Qdrant]
-    J --> K([✅ Ready])
+    A(["🔗 URL"]) --> B["Resolve Source\nSpotify · Apple · RSS"]
+    B --> C["Download Audio"]
+    C --> D["WhisperX\nTranscription"]
+    D --> E["Speaker\nDiarization"]
+    E --> F["Speaker Name\nInference via LLM"]
+    F --> G["Summarization\n4 layers"]
+    G --> H["Chapter\nGeneration"]
+    H --> I["Glossary +\nQuiz Generation"]
+    I --> J["Vector\nEmbedding → Qdrant"]
+    J --> K(["✅ Ready"])
 
     style A fill:#1a1a2e,color:#fff
     style K fill:#16213e,color:#4ade80
-```
-
-Progress is streamed to the browser in real-time over WebSocket. Each step emits a status event so the UI updates without polling.
-
----
-
-## User Journey
-
-```mermaid
-sequenceDiagram
-    actor User
-    participant Home as Home Page
-    participant API as FastAPI
-    participant Queue as Celery Queue
-    participant AI as AI Workers
-    participant Episode as Episode View
-
-    User->>Home: Paste podcast URL
-    Home->>API: POST /ingest {url, language}
-    API->>Queue: Enqueue processing task
-    API-->>Home: {episode_id, status: pending}
-    Home-->>User: Show progress bar (WebSocket)
-
-    loop Processing (2–15 min depending on length)
-        Queue->>AI: Run pipeline steps
-        AI-->>Home: ws: {step, progress%}
-    end
-
-    AI-->>Home: ws: {status: complete}
-    Home->>Episode: Navigate to episode
-    Episode->>API: GET /episodes/{id}/summary
-    Episode->>API: GET /episodes/{id}/chapters
-    Episode->>API: GET /episodes/{id}/transcript
-    Episode-->>User: Full intelligence dashboard
-
-    User->>Episode: Ask a question in chat
-    Episode->>API: POST /chat {message, conversation_id}
-    API->>AI: RAG retrieval + LLM generation
-    AI-->>Episode: Streamed answer + sources
-    Episode-->>User: Response with timestamp citations
 ```
 
 ---
 
 ## Tech Stack
 
-```mermaid
-graph LR
-    subgraph Frontend
-        NX[Next.js 16]
-        RE[React 19]
-        TW[Tailwind CSS v4]
-        FM[Framer Motion]
-        RQ[TanStack Query]
-        WV[WaveSurfer.js]
-    end
-
-    subgraph Backend
-        FA[FastAPI]
-        SA[SQLAlchemy]
-        CE[Celery]
-        PY[Pydantic v2]
-    end
-
-    subgraph AI_ML["AI / ML"]
-        WX[WhisperX]
-        OL[Ollama / Llama 3]
-        OA[OpenAI API]
-        AN[Anthropic API]
-        ST[Sentence Transformers]
-    end
-
-    subgraph Infra
-        PG[PostgreSQL 15]
-        RD[Redis 7]
-        QD[Qdrant 1.12]
-        DC[Docker Compose]
-    end
-```
+| Layer | Technologies |
+|-------|-------------|
+| **Frontend** | Next.js 16 · React 19 · Tailwind CSS v4 · Framer Motion · TanStack Query · WaveSurfer.js |
+| **Backend** | FastAPI · SQLAlchemy · Celery · Pydantic v2 · SlowAPI |
+| **AI / ML** | WhisperX · Ollama (Llama 3 / Mistral) · OpenAI · Anthropic · Sentence Transformers |
+| **Storage** | PostgreSQL 15 · Redis 7 · Qdrant 1.12 |
+| **Infrastructure** | Docker Compose · Prometheus metrics · Alembic migrations |
 
 ---
 
@@ -236,7 +161,7 @@ graph LR
 ### Prerequisites
 
 - Docker & Docker Compose
-- **NVIDIA GPU + NVIDIA Container Toolkit** — the default `docker-compose.yml` reserves a GPU for Ollama, transcription, and embeddings. To run CPU-only, remove the `deploy.resources.reservations` blocks from the `ollama`, `worker-low`, and `worker-high` services (expect much slower processing).
+- **NVIDIA GPU + NVIDIA Container Toolkit** — required by the default `docker-compose.yml` for Ollama, transcription, and embeddings. To run CPU-only, remove the `deploy.resources.reservations` blocks from `ollama`, `worker-low`, and `worker-high` (expect slower processing).
 - 16 GB RAM minimum; 32 GB recommended for local LLM
 
 ### 1. Clone & configure
@@ -252,7 +177,7 @@ Edit `.env` — the minimum required variables:
 ```env
 SECRET_KEY=your-secret-key-here          # Generate: openssl rand -hex 32
 POSTGRES_PASSWORD=changeme
-FLOWER_PASSWORD=change_me_in_production  # Celery dashboard
+FLOWER_PASSWORD=change_me_in_production
 
 # Choose ONE provider (or set up a fallback chain)
 LLM_PROVIDER=ollama                       # ollama | openai | anthropic
@@ -263,7 +188,7 @@ ANTHROPIC_API_KEY=sk-ant-...             # if using Anthropic
 SPOTIFY_CLIENT_ID=...
 SPOTIFY_CLIENT_SECRET=...
 
-# Optional: WhisperX speaker diarization (HuggingFace token)
+# Optional: WhisperX speaker diarization
 HF_TOKEN=hf_...
 ```
 
@@ -273,7 +198,7 @@ HF_TOKEN=hf_...
 docker compose --profile prod up -d --build
 ```
 
-This starts: PostgreSQL · Redis · Qdrant · Ollama · FastAPI · two Celery workers · Flower dashboard · the web frontend. (The `prod` profile includes the frontend container; omit it if you run the frontend separately with `npm run dev`.)
+The `prod` profile starts everything: PostgreSQL · Redis · Qdrant · Ollama · FastAPI · two Celery workers · Flower · frontend. Omit `--profile prod` to skip the containerized frontend and run it locally with `npm run dev`.
 
 ### 3. Initialize the database
 
@@ -281,7 +206,7 @@ This starts: PostgreSQL · Redis · Qdrant · Ollama · FastAPI · two Celery wo
 docker compose exec api alembic upgrade head
 ```
 
-### 4. Pull the LLM model (if using Ollama)
+### 4. Pull the LLM model (Ollama only)
 
 ```bash
 docker compose exec ollama ollama pull mistral
@@ -296,18 +221,18 @@ docker compose exec ollama ollama pull mistral
 | Flower (queue monitor) | http://localhost:5555 |
 | Qdrant Dashboard | http://localhost:6333/dashboard |
 
-### 6. Register and ingest your first episode
+### 6. Register and ingest
 
-1. Go to http://localhost:3001/register and create an account
+1. Go to `http://localhost:3001/register` and create an account
 2. Paste any podcast URL on the home page
-3. Watch the progress bar as the pipeline runs
+3. Watch the real-time progress bar
 4. Explore the intelligence dashboard when processing completes
 
 ---
 
 ## Configuration
 
-All options live in `.env`. Key sections:
+All options live in `.env`:
 
 ```env
 # LLM — fallback chain (tries providers left-to-right on failure)
@@ -316,11 +241,9 @@ OLLAMA_MODEL=mistral
 LLM_FALLBACK_CHAIN=ollama:mistral
 
 # Pipeline behavior
-SUMMARY_MODE=tldr            # tldr (fast, focused) | standard | deep
-TRANSLATE_TRANSCRIPT=false   # translate the full transcript to the target language
-                             # (slow: dozens of extra LLM calls; summaries are
-                             # always generated in the target language regardless)
-FACT_CHECK_PROVIDER=none     # none | searxng (needs your own SearxNG instance)
+SUMMARY_MODE=tldr            # tldr | standard | deep
+TRANSLATE_TRANSCRIPT=false
+FACT_CHECK_PROVIDER=none     # none | searxng
 
 # Rate limiting
 RATE_LIMIT_AUTH=10/minute
@@ -338,84 +261,52 @@ DB_MAX_OVERFLOW=20
 
 ---
 
-## Security
-
-PodAI applies defense-in-depth across every layer:
-
-### API Layer
-- **JWT authentication** on all endpoints (access token: 60 min, refresh: 7 days)
-- **Rate limiting** via SlowAPI backed by Redis (per-route, per-IP)
-- **CORS** restricted to configured origins only — no wildcard in production
-- **Security headers** on every response: `Strict-Transport-Security`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy`
-- **`/metrics` endpoint** restricted to loopback/private IP addresses only
-
-### Download & SSRF Protection
-- **Domain allowlist** — only approved podcast CDNs and directories may be fetched
-- **Private IP check** — loopback, link-local, and RFC-1918 addresses are blocked before and after redirects
-- **Redirect verification** — final redirect destination is re-checked for SSRF
-- **Max download size** enforced during streaming (default 500 MB)
-
-### Infrastructure
-- **All infrastructure ports** (PostgreSQL, Redis, Qdrant, Ollama, Flower) are bound to `127.0.0.1` — not exposed to external interfaces
-- **Flower dashboard** protected by HTTP Basic Auth (`FLOWER_PASSWORD` env var)
-- **`DEBUG=false`** by default; must be explicitly enabled
-- **`SECRET_KEY`** validated to be at least 32 characters at startup
-
-### Secrets & Configuration
-- `.env` is in `.gitignore` — never committed
-- `.env.example` contains safe placeholder values, no real secrets
-- Database files (`*.db`, `*.sqlite`) excluded from version control
-
----
-
 ## API Overview
 
-The REST API is documented interactively at `/docs` (Swagger UI) and `/redoc`.
+Full interactive documentation at `/docs` (Swagger UI) and `/redoc`.
 
 ```mermaid
-graph TD
-    subgraph Auth["/api/v1/auth"]
-        R[POST /register]
-        L[POST /login]
-        RF[POST /refresh]
+graph LR
+    subgraph Auth["/v1/auth"]
+        A1["POST /register"]
+        A2["POST /login"]
+        A3["POST /refresh"]
     end
 
-    subgraph Episodes["/api/v1/episodes"]
-        IN[POST /ingest]
-        LS[GET /]
-        EP[GET /{id}]
-        TR[GET /{id}/transcript]
-        SM[GET /{id}/summary]
-        CH[GET /{id}/chapters]
-        GL[GET /{id}/glossary]
-        QZ[GET /{id}/quiz]
-        AU[GET /{id}/audio]
+    subgraph Episodes["/v1/episodes"]
+        E1["POST /ingest"]
+        E2["GET /"]
+        E3["GET /:id"]
+        E4["GET /:id/transcript"]
+        E5["GET /:id/summary"]
+        E6["GET /:id/chapters"]
+        E7["GET /:id/glossary"]
+        E8["GET /:id/quiz"]
+        E9["GET /:id/audio"]
     end
 
-    subgraph Chat["/api/v1/chat"]
-        CM[POST /]
-        CV[GET /{conversation_id}]
+    subgraph Chat["/v1/episodes/:id/chat"]
+        C1["POST /stream"]
+        C2["GET /history"]
+        C3["GET /suggestions"]
     end
 
-    subgraph Discovery["/api/v1"]
-        SS[GET /search/global]
-        GU[GET /glossary/universal]
-        AR[GET /activity/recent]
-    end
-
-    subgraph WS["WebSocket"]
-        WE["ws://host/ws/status/{episode_id}"]
+    subgraph Discovery["/v1"]
+        D1["GET /search/global"]
+        D2["GET /glossary/universal"]
+        D3["GET /graph/full"]
+        D4["GET /ask/stream"]
     end
 ```
 
-All endpoints except `/auth` require a Bearer JWT token.
+> All endpoints except `/auth` require a `Bearer` JWT token.
 
 ---
 
 ## Project Structure
 
 ```
-podcast-summarizer/
+podcast_summarizer/
 ├── backend/
 │   ├── app/
 │   │   ├── api/v1/endpoints/     # Route handlers
@@ -465,20 +356,11 @@ podcast-summarizer/
 ## Development
 
 ```bash
-# Start everything
-make up
-
-# Stream API logs
-make logs-api
-
-# Open a shell in the API container
-make shell-api
-
-# Run backend tests
-make test
-
-# Stop all services
-make down
+make up          # Start all services
+make logs-api    # Stream API logs
+make shell-api   # Shell into the API container
+make test        # Run backend tests
+make down        # Stop all services
 ```
 
 ---
