@@ -15,7 +15,7 @@
 
 </div>
 
-PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RSS feed — and produces a full intelligence layer: speaker-tagged transcripts, multi-perspective summaries, auto-generated chapters, a technical glossary, evidence-grounded quizzes, and a RAG-powered chat interface that lets you query the episode like a document.
+PodAI ingests any podcast - from a Spotify URL, Apple Podcasts link, or raw RSS feed - and produces a full intelligence layer: speaker-tagged transcripts, multi-perspective summaries, auto-generated chapters, a technical glossary, evidence-grounded quizzes, and a RAG-powered chat interface that lets you query the episode like a document.
 
 ---
 
@@ -61,7 +61,7 @@ https://github.com/user-attachments/assets/a3477b39-7700-42cf-a8f9-286eef92e243
 | **Search** | Semantic search across your entire episode library |
 | **Knowledge Graph** | Entity extraction and relationship visualization |
 | **Multilingual** | 11 languages: EN · TR · FR · ES · DE · IT · PT · RU · ZH · JA · KO |
-| **LLM Providers** | Ollama (local) · OpenAI · Anthropic — with fallback chains |
+| **LLM Providers** | Ollama (local) · OpenAI · Anthropic - with fallback chains |
 
 ---
 
@@ -221,7 +221,7 @@ sequenceDiagram
 ### Prerequisites
 
 - Docker & Docker Compose
-- **NVIDIA GPU + NVIDIA Container Toolkit** — required by the default `docker-compose.yml` for Ollama, transcription, and embeddings. To run CPU-only, remove the `deploy.resources.reservations` blocks from `ollama`, `worker-low`, and `worker-high` (expect slower processing).
+- **NVIDIA GPU + NVIDIA Container Toolkit** - required by the default `docker-compose.yml` for Ollama, transcription, and embeddings. To run CPU-only, remove the `deploy.resources.reservations` blocks from `ollama`, `worker-low`, and `worker-high` (expect slower processing).
 - 16 GB RAM minimum; 32 GB recommended for local LLM
 
 ### 1. Clone & configure
@@ -232,7 +232,7 @@ cd podcast_summarizer
 cp .env.example .env
 ```
 
-Edit `.env` — the minimum required variables:
+Edit `.env` - the minimum required variables:
 
 ```env
 SECRET_KEY=your-secret-key-here          # Generate: openssl rand -hex 32
@@ -295,7 +295,7 @@ docker compose exec ollama ollama pull mistral
 All options live in `.env`:
 
 ```env
-# LLM — fallback chain (tries providers left-to-right on failure)
+# LLM - fallback chain (tries providers left-to-right on failure)
 LLM_PROVIDER=ollama
 OLLAMA_MODEL=mistral
 LLM_FALLBACK_CHAIN=ollama:mistral
@@ -427,7 +427,7 @@ make down        # Stop all services
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 ---
 
