@@ -36,8 +36,8 @@ PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RS
 ### 🎬 Product Demo
 
 <div align="center">
-  <video src="frontend/public/videos/demo.mp4" controls="controls" muted="muted" width="800">
-    Your browser does not support the video tag. <a href="frontend/public/videos/demo.mp4">Download the demo video</a>.
+  <video src="https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4" controls="controls" muted="muted" width="800">
+    <a href="https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4">▶️ Watch the Demo</a>
   </video>
 </div>
 
@@ -242,8 +242,8 @@ graph LR
 ### 1. Clone & configure
 
 ```bash
-git clone https://github.com/your-username/podcast-summarizer.git
-cd podcast-summarizer
+git clone https://github.com/erenkbgc/podcast_summarizer.git
+cd podcast_summarizer
 cp .env.example .env
 ```
 
