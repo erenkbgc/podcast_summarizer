@@ -47,33 +47,38 @@ class ConnectionManager:
         logger.info(f"WebSocket DISCONNECTED: {episode_id}")
 
     async def _redis_listener(self):
-        logger.info("Attempting to start Redis Pub/Sub listener...")
-        try:
-            pubsub = self.redis_client.pubsub()
-            await pubsub.subscribe("episode_updates")
-            logger.info("Redis Pub/Sub SUBSCRIBED to 'episode_updates'")
-            
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    try:
-                        data = json.loads(message["data"])
-                        episode_id = str(data.get("episode_id"))
-                        user_id = str(data.get("user_id")) if data.get("user_id") is not None else None
-                        
-                        # Broadcast to specific episode listeners
-                        if episode_id in self.active_connections:
-                            await self.broadcast_to_episode(episode_id, data, user_id=user_id)
-                        
-                        # Broadcast to dashboard listeners
-                        if "dashboard" in self.active_connections:
-                            await self.broadcast_to_episode("dashboard", data, user_id=user_id)
-                    except Exception as e:
-                        logger.error(f"Error broadcasting message: {e}")
-        except Exception as e:
-            logger.error(f"Redis Pub/Sub listener CRASHED: {e}")
-        finally:
-            self.pubsub_task = None
-            logger.info("Redis Pub/Sub listener STOPPED")
+        retry_delay = 1
+        while True:
+            logger.info("Attempting to start Redis Pub/Sub listener...")
+            try:
+                pubsub = self.redis_client.pubsub()
+                await pubsub.subscribe("episode_updates")
+                logger.info("Redis Pub/Sub SUBSCRIBED to 'episode_updates'")
+                retry_delay = 1  # reset backoff on successful connect
+
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        try:
+                            data = json.loads(message["data"])
+                            episode_id = str(data.get("episode_id"))
+                            user_id = str(data.get("user_id")) if data.get("user_id") is not None else None
+
+                            if episode_id in self.active_connections:
+                                await self.broadcast_to_episode(episode_id, data, user_id=user_id)
+
+                            if "dashboard" in self.active_connections:
+                                await self.broadcast_to_episode("dashboard", data, user_id=user_id)
+                        except Exception as e:
+                            logger.error(f"Error broadcasting message: {e}")
+            except asyncio.CancelledError:
+                logger.info("Redis Pub/Sub listener CANCELLED")
+                break
+            except Exception as e:
+                logger.error(f"Redis Pub/Sub listener CRASHED: {e} — retrying in {retry_delay}s")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 30)
+        self.pubsub_task = None
+        logger.info("Redis Pub/Sub listener STOPPED")
 
     async def broadcast_to_episode(self, episode_id: str, message: dict, user_id: str | None = None):
         if episode_id in self.active_connections:

@@ -105,7 +105,9 @@ class ChapterRead(BaseModel):
     id: int
     episode_id: int
     timestamp: float
+    end_timestamp: Optional[float] = None
     title: str
+    description: Optional[str] = None
     summary: Optional[str] = None
     is_main: Optional[int] = None
 

@@ -111,6 +111,7 @@ class Chapter(Base):
     id = Column(Integer, primary_key=True, index=True)
     episode_id = Column(Integer, ForeignKey("episodes.id"))
     timestamp = Column(Float)
+    end_timestamp = Column(Float)
     title = Column(String)
     description = Column(String)
     summary = Column(String)

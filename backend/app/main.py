@@ -1,10 +1,15 @@
 import re
+import time
 from uuid import uuid4
 
+import redis as redis_lib
+import requests as _requests
+from sqlalchemy import text
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from app.core.config import settings
 from app.core.errors import (
@@ -121,7 +126,61 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    checks: dict = {}
+    overall = "healthy"
+
+    # PostgreSQL
+    try:
+        t0 = time.monotonic()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["postgres"] = {"status": "ok", "latency_ms": round((time.monotonic() - t0) * 1000, 1)}
+    except Exception as exc:
+        checks["postgres"] = {"status": "error", "detail": str(exc)}
+        overall = "degraded"
+
+    # Redis
+    try:
+        t0 = time.monotonic()
+        r = redis_lib.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        r.ping()
+        checks["redis"] = {"status": "ok", "latency_ms": round((time.monotonic() - t0) * 1000, 1)}
+    except Exception as exc:
+        checks["redis"] = {"status": "error", "detail": str(exc)}
+        overall = "degraded"
+
+    # Qdrant
+    try:
+        t0 = time.monotonic()
+        resp = _requests.get(f"{settings.QDRANT_URL}/healthz", timeout=2)
+        resp.raise_for_status()
+        checks["qdrant"] = {"status": "ok", "latency_ms": round((time.monotonic() - t0) * 1000, 1)}
+    except Exception as exc:
+        checks["qdrant"] = {"status": "error", "detail": str(exc)}
+        overall = "degraded"
+
+    # Ollama (only when configured as LLM provider)
+    if settings.LLM_PROVIDER == "ollama":
+        try:
+            t0 = time.monotonic()
+            resp = _requests.get(f"{settings.OLLAMA_URL}/api/tags", timeout=3)
+            resp.raise_for_status()
+            checks["ollama"] = {"status": "ok", "latency_ms": round((time.monotonic() - t0) * 1000, 1)}
+        except Exception as exc:
+            checks["ollama"] = {"status": "error", "detail": str(exc)}
+            overall = "degraded"
+
+    status_code = 200 if overall == "healthy" else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": overall, "checks": checks},
+    )
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    """Prometheus metrics scrape endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.exception_handler(Exception)

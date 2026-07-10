@@ -736,6 +736,19 @@ INSTRUCTIONS:
         final_msg = f"{message}\n\n(Important: {native_reminders.get(target_lang[:2], 'Respond in ' + target_lang)})"
         messages.append({"role": "user", "content": final_msg})
 
+        # Yield sources metadata first so the frontend can display citations
+        if sources:
+            yield {
+                "_sources": [
+                    {
+                        "timestamp": s["timestamp"],
+                        "text": (s.get("quote_text") or s.get("text", ""))[:200],
+                        "speaker": s.get("speaker"),
+                    }
+                    for s in sources[:5]
+                ]
+            }
+
         # Stream the response (best-effort; never hard-refuse when some context exists)
         full_response = ""
         for chunk in self.llm.chat(messages, stream=True, metadata={"task": "chat_response", "mode": mode}):

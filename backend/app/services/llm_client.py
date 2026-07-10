@@ -266,16 +266,19 @@ class LLMClient:
         }
         return lang_map.get((code or "en").lower(), (code or "EN").upper())
 
-    def _call_ollama(self, messages: List[Dict[str, str]], model: str, stream: bool = False, format: str = "") -> Any:
+    def _call_ollama(self, messages: List[Dict[str, str]], model: str, stream: bool = False, format: str = "", options: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self.base_url}/chat"
+        merged_options: Dict[str, Any] = {
+            "num_ctx": self.num_ctx,
+            "temperature": 0.2,
+        }
+        if options:
+            merged_options.update(options)
         payload = {
             "model": model,
             "messages": messages,
             "stream": stream,
-            "options": {
-                "num_ctx": self.num_ctx,
-                "temperature": 0.2,
-            },
+            "options": merged_options,
         }
         if format:
             payload["format"] = format
@@ -371,7 +374,7 @@ class LLMClient:
             return ""
         return str(content[0].get("text", ""))
 
-    def _dispatch(self, provider: str, model: str, messages: List[Dict[str, str]], stream: bool, format: str) -> Any:
+    def _dispatch(self, provider: str, model: str, messages: List[Dict[str, str]], stream: bool, format: str, options: Optional[Dict[str, Any]] = None) -> Any:
         provider = (provider or "ollama").lower()
         if provider == "openai":
             # OpenAI streaming not implemented — degrade gracefully to a
@@ -383,7 +386,52 @@ class LLMClient:
             if stream:
                 return iter([self._call_anthropic(messages=messages, model=model, format=format)])
             return self._call_anthropic(messages=messages, model=model, format=format)
-        return self._call_ollama(messages=messages, model=model, stream=stream, format=format)
+        return self._call_ollama(messages=messages, model=model, stream=stream, format=format, options=options)
+
+    # Output-token budgets per pipeline task (Ollama num_predict). Without a cap the
+    # model generates until it decides to stop, which dominates request latency.
+    TASK_OUTPUT_BUDGET: Dict[str, int] = {
+        "generate_summary": 1024,
+        "progressive_chunk_summary": 512,
+        "extract_chapters": 512,
+        "extract_glossary": 512,
+        "extract_entities": 512,
+        "extract_podcast_tags": 256,
+        "extract_verifiable_claims": 384,
+        "generate_quiz": 1280,
+        "identify_speakers": 256,
+        "generate_visual_signals": 512,
+        "generate_persona_summary": 640,
+        "translate_transcript_chunk_json": 1024,
+        "translate_segments": 1024,
+        "translate_summary_fields": 1536,
+        "chat_response": 640,
+        "library_chat": 640,
+        "chat_suggestions": 256,
+        "chat_context_compression": 384,
+        "memory_context_compression": 384,
+        "hyde_generation": 256,
+        "query_refinement": 128,
+        "multi_hop_query_generation": 192,
+    }
+    DEFAULT_OUTPUT_BUDGET: int = 1024
+
+    def _build_options(self, token_estimate: int, metadata: Optional[Dict[str, Any]], options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Per-request Ollama options: task-based output cap and a right-sized num_ctx.
+
+        num_ctx is grown in powers of two to fit prompt + output (a 16k KV cache for a
+        300-token tag prompt slows every request), but never exceeds the configured max.
+        """
+        opts: Dict[str, Any] = dict(options or {})
+        task_name = str((metadata or {}).get("task", ""))
+        opts.setdefault("num_predict", self.TASK_OUTPUT_BUDGET.get(task_name, self.DEFAULT_OUTPUT_BUDGET))
+        if "num_ctx" not in opts:
+            needed = token_estimate + int(opts["num_predict"]) + 256
+            num_ctx = 2048
+            while num_ctx < needed and num_ctx < self.num_ctx:
+                num_ctx *= 2
+            opts["num_ctx"] = min(num_ctx, self.num_ctx)
+        return opts
 
     def chat(
         self,
@@ -391,9 +439,11 @@ class LLMClient:
         stream: bool = False,
         format: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> Any:
         trimmed_messages = self._trim_messages_to_context(messages)
         token_estimate = self._count_tokens(trimmed_messages)
+        request_options = self._build_options(token_estimate, metadata, options)
 
         last_error: Optional[Exception] = None
         for provider, model in self._route_chain():
@@ -402,7 +452,7 @@ class LLMClient:
 
             for attempt in range(1, self.max_retries + 1):
                 try:
-                    response = self._dispatch(provider, model, trimmed_messages, stream=stream, format=format)
+                    response = self._dispatch(provider, model, trimmed_messages, stream=stream, format=format, options=request_options)
                     self._mark_success(provider, model)
                     logger.info(
                         "llm.request.success",
@@ -473,7 +523,7 @@ class LLMClient:
         except Exception as e:
             logger.error(f"JSON object parse fallback failed: {e}. Raw: {cleaned[:100]}...")
 
-        print(f"CRITICAL: Failed to parse JSON object from LLM response. Response length: {len(response)}")
+        logger.critical("Failed to parse JSON object from LLM response. Response length: %d", len(response))
         return {
             "global_summary": f"Neural synthesis completed but structure was invalid. Raw output preview: {response[:200]}...",
             "action_items": ["Review transcript manually", "Retry synthesis with different parameters"],
@@ -800,6 +850,77 @@ class LLMClient:
 
         return normalized
 
+    def _ensure_summary_language(self, data: Dict[str, Any], lang: str) -> Dict[str, Any]:
+        """Guarantee user-visible summary fields are in the target language.
+
+        Small local models often ignore the language instruction when the
+        transcript is in another language; one cheap translation call fixes that.
+        Quotes are left verbatim on purpose.
+        """
+        target = (lang or "en")[:2].lower()
+        if target == "en":
+            return data
+        probe = f" {data.get('executive_brief', '')} {str(data.get('global_summary', ''))[:400]} ".lower()
+        english_markers = (" the ", " and ", " of ", " to ", " is ", " are ", " that ", " this ")
+        if sum(probe.count(m) for m in english_markers) < 3:
+            return data
+
+        # Collect user-visible strings as a flat index->text map. Translating a flat
+        # map (like the transcript translator does) is far more reliable with small
+        # models than asking them to preserve a nested JSON structure.
+        texts: List[str] = []
+        setters: List[Any] = []
+
+        def _collect(container: Any, key: Any) -> None:
+            value = container[key]
+            if isinstance(value, str) and value.strip():
+                texts.append(value)
+                setters.append((container, key))
+
+        for field in ("executive_brief", "global_summary"):
+            if isinstance(data.get(field), str):
+                _collect(data, field)
+        for field in ("key_insights", "action_items", "suggested_questions"):
+            items = data.get(field)
+            if not isinstance(items, list):
+                continue
+            for i, item in enumerate(items):
+                if isinstance(item, str):
+                    _collect(items, i)
+                elif isinstance(item, dict):
+                    for text_key in ("text", "why_matters"):
+                        if isinstance(item.get(text_key), str) and item[text_key].strip():
+                            _collect(item, text_key)
+
+        if not texts:
+            return data
+        full_lang = self._get_lang_name(target)
+        payload = {str(i): t for i, t in enumerate(texts)}
+        try:
+            response = self.chat(
+                [
+                    {"role": "system", "content": f"You are a strict JSON translator to {full_lang}."},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Translate every value of this JSON object to natural {full_lang}. "
+                            "Return ONLY a JSON object with the same keys. No explanation.\n\n"
+                            f"INPUT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
+                        ),
+                    },
+                ],
+                format="json",
+                metadata={"task": "translate_summary_fields"},
+            )
+            translated = self._parse_json_object(str(response))
+            for i, (container, key) in enumerate(setters):
+                new_val = translated.get(str(i))
+                if isinstance(new_val, str) and new_val.strip():
+                    container[key] = new_val.strip()
+        except Exception as e:
+            logger.warning("Summary language enforcement failed: %s", e)
+        return data
+
     def generate_summary(self, transcript_segments: List[Dict[str, Any]], lang: str = "en", summary_type: str = "default") -> Dict[str, Any]:
         """Generate structured summary payload in the target language."""
         if not transcript_segments:
@@ -869,6 +990,7 @@ class LLMClient:
         style_key = (summary_type or "default").lower()
         style_hint = style_map.get(style_key, style_map["default"])
 
+        mode = (settings.SUMMARY_MODE or "tldr").lower()
         variant_seed = f"summary|{style_key}|{formatted_text[:200]}"
         variant = self.prompt_manager.choose_variant(variant_seed)
         prompt = self.prompt_manager.summary_prompt(
@@ -876,26 +998,17 @@ class LLMClient:
             style_hint=style_hint,
             formatted_text=formatted_text,
             summary_type=style_key,
+            mode=mode,
+            language=lang,
             variant=variant,
         )
-        prompt += (
-            "\nADDITIONAL REQUIRED FIELDS (all text in target language):\n"
-            "summary_layers:\n"
-            "- level_1_tldr: single sentence, max 25 words\n"
-            "- level_2_exec: 3-5 sentences\n"
-            "- level_3_outline: list of sections with title + summary\n"
-            "- level_4_notes: full structured notes (nested bullets allowed as objects)\n\n"
-            "persona_summaries: Generate DISTINCT summaries for each persona LENS — each one should be completely different in focus and tone:\n"
-            f"- default: Balanced, curious listener perspective. Full-spectrum analysis in {full_lang}.\n"
-            f"- investor: ONLY focus on monetization potential, market opportunities, financial risks, ROI implications, valuations. Minimum 4 sentences in {full_lang}.\n"
-            f"- skeptic: ONLY focus on what's unproven, potential biases, missing evidence, counterarguments, logical fallacies. Minimum 4 sentences in {full_lang}.\n\n"
-            "perspective_summaries with keys: business, technical, personal_development, investor.\n"
-            "high_value_moments list with type in [emotional_intensity, revelation, transition, call_to_action], timestamp, reason, intensity.\n"
-            "categorized_insights with keys: core_concepts, surprising_facts, actionable_tips, questions_raised, contradictions_discovered, predictions_made.\n"
-            "conversation_flow with keys: qa_patterns, debate_structures, power_dynamics.\n"
-            "action_items_structured list with: text, explicitness(explicit|implicit), priority(high|medium|low), owner, timeline.\n"
-            "structured_notes: comprehensive section-wise notes.\n"
-        )
+        if mode == "deep":
+            prompt += (
+                "\nADDITIONAL REQUIRED FIELDS (all text in target language):\n"
+                "high_value_moments list (max 5) with: type in [emotional_intensity, revelation, transition, call_to_action], timestamp, reason, intensity (0-1).\n"
+                "categorized_insights with keys: core_concepts, surprising_facts, actionable_tips (each max 3 items).\n"
+                "action_items_structured list with: text, priority(high|medium|low), owner, timeline.\n"
+            )
 
         messages = [
             {
@@ -916,6 +1029,7 @@ class LLMClient:
             metadata={"prompt_version": self.prompt_manager.VERSION, "prompt_variant": variant, "task": "generate_summary"},
         )
         parsed = self._parse_json_object(response)
+        parsed = self._ensure_summary_language(parsed, lang)
         return self._normalize_summary_data(parsed, lang=lang, transcript_segments=transcript_segments)
 
     def extract_chapters(self, transcript_segments: List[Dict[str, Any]], lang: str = "en") -> List[Dict[str, Any]]:
@@ -925,7 +1039,7 @@ class LLMClient:
 
         last_seg = sorted_segments[-1]
         total_duration = last_seg.get("end", last_seg.get("start", 0.0) + 5)
-        chunk_size = 900
+        chunk_size = 1800
         all_chapters: List[Dict[str, Any]] = []
         num_chunks = int(total_duration // chunk_size) + 1
         full_lang = self._get_lang_name(lang)
@@ -942,9 +1056,11 @@ class LLMClient:
                 f"Identify 2-4 major chapter transitions in this podcast slice ({chunk_start:.0f}s to {chunk_end:.0f}s).\n"
                 f"All text MUST be in {full_lang}.\n\n"
                 "RULES:\n"
-                "- title: SHORT, DESCRIPTIVE, SPECIFIC (max 8 words). Do NOT write generic titles like 'Introduction' or 'Discussion'.\n"
-                "  Capture the EXACT topic being discussed. Example: 'Fed'in Faiz Kararı', 'Apple iPhone Satışları'.\n"
-                "- summary: 1-2 sentence description of this chapter's content.\n"
+                "- title: A natural, readable PHRASE (3-7 words). Must read like a headline, NOT a list of keywords.\n"
+                "  FORBIDDEN: slashes, commas between topics, generic words like 'Introduction'/'Discussion'.\n"
+                "  GOOD examples: 'Iran Diaspora World Cup Dilemma', 'Fed Rate Decision Aftermath', 'Apple Vision Pro Sales Slump'.\n"
+                "  BAD examples: 'Iran / Team / Training', 'World / Cup / Diaspora'.\n"
+                "- summary: 1 SHORT sentence (max 25 words) summarising what happens in this chapter.\n"
                 "- timestamp: exact start time in seconds (float).\n\n"
                 "Return ONLY valid JSON:\n"
                 '{"chapters": [{"timestamp": 0.0, "title": "string", "summary": "string"}]}\n\n'

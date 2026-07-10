@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     LLM_FALLBACK_CHAIN: str = "ollama:llama3"
     LLM_REQUEST_TIMEOUT_SEC: int = 120
-    LLM_MAX_RETRIES: int = 3
+    LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BACKOFF_BASE_SEC: float = 0.8
     LLM_CIRCUIT_BREAKER_FAILURES: int = 5
     LLM_CIRCUIT_BREAKER_COOLDOWN_SEC: int = 60
@@ -45,9 +45,13 @@ class Settings(BaseSettings):
     # CORS / WS
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3002,http://127.0.0.1:3002,http://localhost:5173,http://127.0.0.1:5173"
 
-    # Fact-checking (Self-hosted or Public SearxNG)
-    FACT_CHECK_PROVIDER: str = "searxng" # "searxng" | "none"
+    # Fact-checking (off by default: requires a SearxNG instance with JSON API enabled)
+    FACT_CHECK_PROVIDER: str = "none" # "searxng" | "none"
     SEARXNG_URL: str = "https://searx.be" # Default public instance or http://localhost:8080
+
+    # Pipeline behavior
+    TRANSLATE_TRANSCRIPT: bool = False  # translate full transcript segments to target lang (slow: many LLM calls)
+    SUMMARY_MODE: str = "tldr"  # tldr | standard | deep
 
     SECRET_KEY: str = "" # MUST be set in .env
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 # 1 hour (reduced from 7 days)

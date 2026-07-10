@@ -29,12 +29,20 @@ def get_current_user_id(current_user: User = Depends(get_current_user)) -> str:
     return current_user.id
 
 @router.get("/", response_model=List[EpisodeLibraryRead])
-async def list_episodes(db: Session = Depends(get_db), user_id: str = Depends(get_current_user_id)):
+async def list_episodes(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+    limit: int = 20,
+    offset: int = 0,
+):
+    limit = max(1, min(limit, 100))
     episodes = (
         db.query(Episode)
         .options(joinedload(Episode.podcast))
         .filter(Episode.user_id == user_id)
         .order_by(Episode.created_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     return episodes
@@ -320,7 +328,7 @@ async def get_summary(episode_id: int, persona: str | None = None, db: Session =
                 # Fallback to concatenated segments if full_text missing
                 text = " ".join([seg.get("text", "") for seg in segments]).lower()
 
-            words = re.findall(r'\\b[a-z]{3,}\\b', text)
+            words = re.findall(r'\b[a-z]{3,}\b', text)
             filtered_words = [w for w in words if w not in stop_words]
             common = Counter(filtered_words).most_common(40)
             if common:
@@ -379,7 +387,7 @@ async def get_summary(episode_id: int, persona: str | None = None, db: Session =
                         seg["text"] for seg in segments
                         if start_time <= seg["start"] < end_time
                     ])
-                    words = re.findall(r'\\b[a-z]{4,}\\b', segment_text.lower())
+                    words = re.findall(r'\b[a-z]{4,}\b', segment_text.lower())
                     filtered = [w for w in words if w not in stop_words]
                     if filtered:
                         top_words = Counter(filtered).most_common(3)
@@ -590,6 +598,18 @@ async def get_summary(episode_id: int, persona: str | None = None, db: Session =
         summary.persona_summary = summary.persona_summaries.get(persona_key)
 
     encoded = jsonable_encoder(summary)
+
+    # Normalize categorized_insights: LLM sometimes returns dicts instead of strings
+    ci = encoded.get("categorized_insights")
+    if isinstance(ci, dict):
+        for cat_key, items in ci.items():
+            if not isinstance(items, list):
+                continue
+            ci[cat_key] = [
+                str(item.get("text") or item.get("insight") or item.get("content") or item) if isinstance(item, dict) else str(item)
+                for item in items
+            ]
+
     cache_set_json(cache_key, encoded, ttl_sec=settings.CACHE_EPISODE_TTL_SEC)
     return encoded
 
@@ -598,12 +618,35 @@ async def get_chapters(episode_id: int, db: Session = Depends(get_db), user_id: 
     cache_key = episode_cache_key(user_id, episode_id, "chapters")
     cached = cache_get_json(cache_key)
     # Ignore stale empty chapter cache entries from earlier processing phases.
-    if isinstance(cached, list) and len(cached) > 0:
+    if (
+        isinstance(cached, list)
+        and len(cached) > 0
+        and all(isinstance(item, dict) and item.get("end_timestamp") is not None for item in cached)
+    ):
         return cached
 
     from app.models.podcast import Chapter
     chapters = db.query(Chapter).join(Episode, Chapter.episode_id == Episode.id).filter(Chapter.episode_id == episode_id, Episode.user_id == user_id).order_by(Chapter.timestamp.asc()).all()
     encoded = jsonable_encoder(chapters)
+    if encoded:
+        transcript = (
+            db.query(Transcript)
+            .join(Episode, Transcript.episode_id == Episode.id)
+            .filter(Transcript.episode_id == episode_id, Episode.user_id == user_id)
+            .first()
+        )
+        segments = []
+        if transcript and isinstance(transcript.raw_json, dict):
+            segments = transcript.raw_json.get("segments") or []
+        episode_end = 0.0
+        if segments:
+            episode_end = max(float(s.get("end", s.get("start", 0.0)) or 0.0) for s in segments)
+        for idx, item in enumerate(encoded):
+            next_start = encoded[idx + 1]["timestamp"] if idx + 1 < len(encoded) else episode_end
+            current_start = float(item.get("timestamp") or 0.0)
+            current_end = item.get("end_timestamp")
+            if current_end is None or float(current_end or 0.0) <= current_start:
+                item["end_timestamp"] = max(current_start, float(next_start or current_start))
     # Avoid freezing early empty responses in cache while processing is ongoing.
     if encoded:
         cache_set_json(cache_key, encoded, ttl_sec=settings.CACHE_EPISODE_TTL_SEC)
@@ -662,7 +705,7 @@ async def chat_with_podcast_stream(
     async def event_generator():
         try:
             chat_service = ChatService(db)
-            for chunk in chat_service.process_message_stream(
+            for item in chat_service.process_message_stream(
                 user_id=user_id,
                 episode_id=episode_id,
                 message=payload.message,
@@ -670,7 +713,10 @@ async def chat_with_podcast_stream(
                 context_snapshot=payload.context_snapshot,
                 lang=payload.lang
             ):
-                yield f"data: {json.dumps({'delta': chunk})}\n\n"
+                if isinstance(item, dict) and "_sources" in item:
+                    yield f"data: {json.dumps({'type': 'sources', 'data': item['_sources']})}\n\n"
+                elif isinstance(item, str):
+                    yield f"data: {json.dumps({'delta': item})}\n\n"
             yield "data: [DONE]\n\n"
         except ValueError as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"

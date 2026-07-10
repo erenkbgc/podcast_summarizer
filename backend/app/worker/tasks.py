@@ -14,9 +14,13 @@ import re
 import math
 from collections import Counter
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import redis
 from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _cosine_similarity(v1, v2) -> float:
@@ -122,6 +126,138 @@ def _segment_topics_by_embeddings(
 
     return transitions[:8]
 
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+        if math.isfinite(number):
+            return number
+    except (TypeError, ValueError):
+        pass
+    return default
+
+
+def _episode_duration(segments) -> float:
+    if not segments:
+        return 0.0
+    return max(_safe_float(seg.get("end", seg.get("start", 0.0))) for seg in segments)
+
+
+def _text_between(segments, start: float, end: float, max_chars: int = 360) -> str:
+    parts = []
+    for seg in segments:
+        seg_start = _safe_float(seg.get("start"))
+        seg_end = _safe_float(seg.get("end"), seg_start)
+        if seg_end > start and seg_start < end:
+            text = str(seg.get("text", "")).strip()
+            if text:
+                parts.append(text)
+        if sum(len(p) for p in parts) >= max_chars:
+            break
+    return " ".join(parts)[:max_chars].strip()
+
+
+def _target_chapter_window(duration: float) -> float:
+    if duration <= 20 * 60:
+        return 150.0
+    if duration <= 60 * 60:
+        return 240.0
+    return 360.0
+
+
+def _normalize_coverage_chapters(raw_chapters, topic_transitions, segments, stop_words: set):
+    duration = _episode_duration(segments)
+    if duration <= 0:
+        return []
+
+    raw_by_time = {}
+    boundaries = [0.0, duration]
+    min_gap = 35.0
+
+    for ch in raw_chapters or []:
+        if not isinstance(ch, dict):
+            continue
+        start = max(0.0, min(duration, _safe_float(ch.get("timestamp"))))
+        if duration - start < 10:
+            continue
+        raw_by_time[round(start, 1)] = ch
+        boundaries.append(start)
+
+    for topic in topic_transitions or []:
+        if not isinstance(topic, dict):
+            continue
+        start = max(0.0, min(duration, _safe_float(topic.get("start"))))
+        end = max(0.0, min(duration, _safe_float(topic.get("end"), start)))
+        if 0 < start < duration - 10:
+            boundaries.append(start)
+        if 0 < end < duration - 10:
+            boundaries.append(end)
+
+    # Add deterministic boundaries so no chapter spans an overly large chunk.
+    target = _target_chapter_window(duration)
+    for start, end in list(zip(sorted(boundaries), sorted(boundaries)[1:])):
+        gap = end - start
+        if gap > target * 1.55:
+            pieces = int(math.ceil(gap / target))
+            for i in range(1, pieces):
+                boundaries.append(start + (gap * i / pieces))
+
+    cleaned = []
+    for point in sorted(set(round(b, 1) for b in boundaries)):
+        if not cleaned or point - cleaned[-1] >= min_gap or point == duration:
+            cleaned.append(point)
+        elif point == duration:
+            cleaned[-1] = duration
+
+    if cleaned[0] != 0.0:
+        cleaned.insert(0, 0.0)
+    if cleaned[-1] < duration:
+        cleaned.append(duration)
+
+    chapters = []
+    topic_colors = ["#3E5BFF", "#F97316", "#22C55E", "#A855F7", "#E11D48", "#14B8A6"]
+    for idx in range(len(cleaned) - 1):
+        start = cleaned[idx]
+        end = cleaned[idx + 1]
+        if end <= start:
+            continue
+
+        raw = None
+        for raw_time, candidate in raw_by_time.items():
+            if abs(raw_time - start) <= 45:
+                raw = candidate
+                break
+
+        topic = None
+        for candidate in topic_transitions or []:
+            if not isinstance(candidate, dict):
+                continue
+            t_start = _safe_float(candidate.get("start"))
+            t_end = _safe_float(candidate.get("end"), t_start)
+            if t_start <= start < max(t_end, t_start + 1):
+                topic = candidate
+                break
+
+        interval_text = _text_between(segments, start, end)
+        title = str((raw or {}).get("title") or (topic or {}).get("topic") or "").strip()
+        if not title:
+            title = _extract_topic_label(interval_text, stop_words, f"Part {idx + 1}")
+
+        summary = str((raw or {}).get("summary") or "").strip()
+        if not summary:
+            summary = interval_text
+
+        chapters.append({
+            "timestamp": round(start, 2),
+            "end_timestamp": round(end, 2),
+            "title": title[:120],
+            "summary": summary[:500],
+            "is_main": 1,
+            "color": (topic or {}).get("color") or topic_colors[idx % len(topic_colors)],
+        })
+
+    return chapters
+
 def update_episode_status(db, episode, status, progress=None):
     episode.status = status
     if progress is not None:
@@ -138,10 +274,10 @@ def update_episode_status(db, episode, status, progress=None):
             "progress": episode.progress if progress is not None else episode.progress
         }))
     except Exception as e:
-        print(f"Failed to publish update to Redis: {e}")
+        logger.error("Failed to publish update to Redis: %s", e)
 
-@celery_app.task(name="process_podcast")
-def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_type: str = "default"):
+@celery_app.task(bind=True, name="process_podcast", max_retries=3, default_retry_delay=60)
+def process_podcast(self, episode_id: int, audio_url: str, lang: str = "en", summary_type: str = "default"):
     db = SessionLocal()
     episode = None
     try:
@@ -151,7 +287,7 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
 
         # 1. Download (only if needed)
         if episode.local_path and os.path.exists(episode.local_path):
-            print(f"Using existing audio at {episode.local_path}")
+            logger.info("Using existing audio at %s", episode.local_path)
             local_path = episode.local_path
         else:
             update_episode_status(db, episode, "downloading", 0.05)
@@ -167,11 +303,11 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
         # 2. Transcribe (only if needed)
         transcript = db.query(Transcript).filter(Transcript.episode_id == episode.id).first()
         if transcript and transcript.raw_json:
-            print("Using existing transcript from DB.")
+            logger.info("Using existing transcript from DB.")
             transcript_data = transcript.raw_json
         else:
             update_episode_status(db, episode, "transcribing", 0.1)
-            print(f"Transcribing {local_path}...")
+            logger.info("Transcribing %s", local_path)
             transcriber = Transcriber(model_size="base", device="cuda")
             transcript_data = transcriber.transcribe(local_path, align=True, diarize=True)
             
@@ -194,24 +330,29 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 episode.speaker_map = speaker_map
                 db.commit()
                 named = sum(1 for v in (speaker_map or {}).values() if not str(v).startswith("Speaker "))
-                print(f"Speakers identified: {len(speaker_map or {})} labels, {named} named -> {speaker_map}")
+                logger.info("Speakers identified: %d labels, %d named", len(speaker_map or {}), named)
             except Exception as e:
-                print(f"Speaker identification failed: {e}")
+                logger.warning("Speaker identification failed: %s", e)
 
         # 2c. Translate transcript segments to target language for UI display (if needed)
         detected_lang = str(transcript_data.get("language", "en")[:2]).lower()
         target_lang_short = str((lang or "en")[:2]).lower()
         
-        print(f"Translation check: detected={detected_lang}, target={target_lang_short}")
+        logger.debug("Translation check: detected=%s, target=%s", detected_lang, target_lang_short)
         
-        # Force translation if target is Turkish and current text is English
-        is_english = "good morning from the financial times" in transcript_data.get("full_text", "").lower()[:200]
-        needs_translation = (detected_lang != target_lang_short and target_lang_short != "en") or (target_lang_short == "tr" and is_english)
+        # Full-transcript translation is opt-in (TRANSLATE_TRANSCRIPT): it adds dozens of
+        # sequential LLM calls per episode. Summaries are generated in the target language
+        # regardless, so the transcript stays in its original language by default.
+        needs_translation = (
+            settings.TRANSLATE_TRANSCRIPT
+            and detected_lang != target_lang_short
+            and target_lang_short != "en"
+        )
 
         if needs_translation:
             update_episode_status(db, episode, "translating", 0.38)
             try:
-                print(f"Translating transcript from '{detected_lang}' to '{target_lang_short}'...")
+                logger.info("Translating transcript from %r to %r", detected_lang, target_lang_short)
                 full_lang_name = llm._get_lang_name(lang)
                 translated_segments = []
                 # Translate in chunks of 20 segments to balance speed and quality
@@ -241,9 +382,9 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                             t_response_raw = re.sub(r"```(?:json)?\n?|```", "", t_response_raw).strip()
                             
                         translated_map = json.loads(t_response_raw)
-                        print(f"Chunk {ci//chunk_size + 1} translated successfully.")
+                        logger.debug("Chunk %d translated successfully.", ci // chunk_size + 1)
                     except Exception as je:
-                        print(f"Chunk {ci//chunk_size + 1} translation failed: {je}")
+                        logger.warning("Chunk %d translation failed: %s", ci // chunk_size + 1, je)
                         translated_map = {}
 
                     for i, seg in enumerate(chunk):
@@ -262,20 +403,18 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     transcript.raw_json = transcript_data
                     transcript.full_text = transcript_data["full_text"]
                     db.commit()
-                    print(f"Transcript translation complete: {len(translated_segments)} segments saved to DB.")
+                    logger.info("Transcript translation complete: %d segments saved to DB.", len(translated_segments))
             except Exception as e:
-                print(f"Transcript translation failed (non-fatal): {e}")
-                import traceback
-                traceback.print_exc()
+                logger.warning("Transcript translation failed (non-fatal): %s", e, exc_info=True)
 
         update_episode_status(db, episode, "summarizing", 0.45)
 
 
         # 3. AI Analysis with Ollama
-        print("Analyzing with LLM...")
+        logger.info("Analyzing with LLM...")
         embedding_service = None
         # --- DETERMINISTIC SIGNAL GENERATION (Reliable Fallback) ---
-        print("Calculating deterministic signals...")
+        logger.debug("Calculating deterministic signals...")
         
         # A. Timeline Density (Word count per 60s bucket)
         segments = transcript_data["segments"]
@@ -310,7 +449,8 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
 
         # Basic stop words (extensible)
         en_stop = {
-            "the", "and", "to", "of", "a", "in", "is", "that", "for", "it", "with", "on", "as", "are", "at", "be", "this", "was", "have", "from", "or", "but", "by", "not", "what", "all", "were", "we", "when", "your", "can", "said", "there", "use", "an", "each", "which", "she", "do", "how", "their", "if", "will", "up", "other", "about", "out", "many", "then", "them", "these", "so", "some", "her", "would", "make", "like", "him", "into", "time", "has", "look", "two", "more", "write", "go", "see", "number", "no", "way", "could", "people", "my", "than", "first", "water", "been", "call", "who", "oil", "its", "now", "find", "yeah", "right", "know", "think", "just", "get", "going", "actually", "okay", "um", "uh", "sort", "kind", "mean", "really", 
+            "the", "and", "to", "of", "a", "in", "is", "that", "for", "it", "with", "on", "as", "are", "at", "be", "this", "was", "have", "from", "or", "but", "by", "not", "what", "all", "were", "we", "when", "your", "can", "said", "there", "use", "an", "each", "which", "she", "do", "how", "their", "if", "will", "up", "other", "about", "out", "many", "then", "them", "these", "so", "some", "her", "would", "make", "like", "him", "into", "time", "has", "look", "two", "more", "write", "go", "see", "number", "no", "way", "could", "people", "my", "than", "first", "water", "been", "call", "who", "oil", "its", "now", "find", "yeah", "right", "know", "think", "just", "get", "going", "actually", "okay", "um", "uh", "sort", "kind", "mean", "really",
+            "they", "you", "our", "us", "his", "he", "had", "did", "does", "because", "very", "much", "over", "after", "before", "where", "why", "also", "here", "well", "want", "even", "still", "back", "come", "came", "say", "says", "saying", "one", "today", "well",
             "lot", "bit", "things", "thing", "something", "anything", "everything", "maybe", "probably", "definitely", "basically", "actually", "literally", "actually", "honestly", "honestly", "absolutely", "totally", "certainly", "definitely", "frankly", "obviously", "potentially", "probably", "essentially", "perfectly", "ideally", "generally", "normally", "usually", "frequently", "occasionally", "sometimes", "rarely", "hardly", "ever", "highly", "extremely", "pretty", "quite", "rather", "somewhat", "slightly",
             "podcast", "episode", "guest", "host", "talk", "talking", "listen", "listening", "listeners", "viewer", "viewers", "audience", "subscribe", "channel", "video", "audio", "show", "series", "program", "recording", "broadcast", "interview", "conversation", "discussion"
         }
@@ -320,7 +460,11 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
         }
         
         stop_words_map = {"en": en_stop, "tr": tr_stop}
-        stop_words = stop_words_map.get(lang.lower(), en_stop)
+        # The transcript usually stays in its source language, so filter with the
+        # union of source- and target-language stopwords.
+        stop_words = set(stop_words_map.get(detected_lang, en_stop))
+        stop_words |= stop_words_map.get(lang.lower(), set())
+        stop_words |= en_stop
         stop_words.add("unknown")
         stop_words.add("speaker")
         
@@ -439,10 +583,10 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
             if segmented_topics:
                 topic_transitions = segmented_topics
         except Exception as e:
-            print(f"Embedding-based topic segmentation failed: {e}")
+            logger.warning("Embedding-based topic segmentation failed: %s", e)
         
         # 3.1 Visual Signals (High Fidelity)
-        print("Generating visual signals...")
+        logger.info("Generating visual signals...")
         try:
             visual_signals = llm.generate_visual_signals(transcript_data["segments"], lang=lang)
             llm_transitions = visual_signals.get("topic_transitions", [])
@@ -480,10 +624,10 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     })
                 insight_timeline = normalized_insights
         except Exception as e:
-            print(f"Visual signals generation failed: {e}")
+            logger.warning("Visual signals generation failed: %s", e)
 
         # 3.2 Global Summary & Action Items
-        print("Generating summary...")
+        logger.info("Generating summary...")
         summary_data = llm.generate_summary(transcript_data["segments"], lang=lang, summary_type=summary_type)
         
         # Helper to strictify strings for DB
@@ -634,16 +778,7 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
         db.query(Glossary).filter(Glossary.episode_id == episode.id).delete()
         db.commit()
 
-        # Ensure persona_summaries are populated (fallback to separate pass if missing)
         persona_sums = summary_data.get("persona_summaries") or {}
-        if not persona_sums or "investor" not in persona_sums or "skeptic" not in persona_sums:
-            print("Persona summaries missing from main pass. Running dedicated persona pass...")
-            try:
-                for p_key in ["investor", "skeptic"]:
-                    if p_key not in persona_sums:
-                        persona_sums[p_key] = llm.generate_persona_summary(transcript_data["segments"], p_key, lang=lang)
-            except Exception as pe:
-                print(f"Dedicated persona pass failed: {pe}")
 
         summary_obj = Summary(
             episode_id=episode.id,
@@ -674,40 +809,42 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
             action_items_structured=action_items_structured,
         )
 
-        # 3.1.1 Claim extraction + optional fact-check
-        try:
-            summary_for_claims = summary_text or summary_data.get("executive_brief", "")
-            heuristic_claims = []
-            if summary_for_claims:
-                # Simple heuristics: numbers, percentages, dates, forecasts
-                for line in summary_for_claims.splitlines():
-                    line = line.strip()
-                    if not line:
+        # 3.1.1 Claim extraction + fact-check (skipped entirely when fact-checking is off:
+        # extracted claims are only consumed by the fact-checker)
+        if settings.FACT_CHECK_PROVIDER != "none":
+            try:
+                summary_for_claims = summary_text or summary_data.get("executive_brief", "")
+                heuristic_claims = []
+                if summary_for_claims:
+                    # Simple heuristics: numbers, percentages, dates, forecasts
+                    for line in summary_for_claims.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if re.search(r"\b\d{4}\b", line) or re.search(r"\b\d+%", line) or re.search(r"\b\d+\.\d+\b", line):
+                            heuristic_claims.append({"claim": line})
+                        elif re.search(r"\b(will|expected|forecast|projected|estimate|target)\b", line, re.IGNORECASE):
+                            heuristic_claims.append({"claim": line})
+
+                llm_claims = llm.extract_verifiable_claims(summary_for_claims, lang=lang) if summary_for_claims else []
+                merged_claims = []
+                seen = set()
+                for item in (llm_claims or []) + heuristic_claims:
+                    if not isinstance(item, dict):
                         continue
-                    if re.search(r"\\b\\d{4}\\b", line) or re.search(r"\\b\\d+%\\b", line) or re.search(r"\\b\\d+\\.\\d+\\b", line):
-                        heuristic_claims.append({"claim": line})
-                    elif re.search(r"\\b(will|expected|forecast|projected|estimate|target)\\b", line, re.IGNORECASE):
-                        heuristic_claims.append({"claim": line})
+                    claim = str(item.get("claim", "")).strip()
+                    if not claim:
+                        continue
+                    key = claim.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged_claims.append(claim)
 
-            llm_claims = llm.extract_verifiable_claims(summary_for_claims, lang=lang) if summary_for_claims else []
-            merged_claims = []
-            seen = set()
-            for item in (llm_claims or []) + heuristic_claims:
-                if not isinstance(item, dict):
-                    continue
-                claim = str(item.get("claim", "")).strip()
-                if not claim:
-                    continue
-                key = claim.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged_claims.append(claim)
-
-            fact_checker = FactChecker()
-            summary_obj.claim_checks = fact_checker.verify_claims(merged_claims[:8])
-        except Exception as e:
-            print(f"Claim extraction failed: {e}")
+                fact_checker = FactChecker()
+                summary_obj.claim_checks = fact_checker.verify_claims(merged_claims[:8])
+            except Exception as e:
+                logger.error("Claim extraction failed: %s", e)
 
 
         db.add(summary_obj)
@@ -715,59 +852,111 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
 
         
         update_episode_status(db, episode, "extracting_chapters", 0.65)
-        
-        # 3.2 Chapters
+
+        # Pre-checks for conditional tasks (must happen before threads touch DB)
+        if episode.podcast_id:
+            podcast_for_tags = db.query(Podcast).filter(Podcast.id == episode.podcast_id).first()
+        else:
+            podcast_for_tags = None
+        generate_tags = podcast_for_tags is not None and not podcast_for_tags.tags
+
+        if summary_type == "executive":
+            difficulty_profile = {"easy": 1, "medium": 3, "hard": 4}
+            cognitive_targets = ["understand", "apply", "analyze", "evaluate"]
+        elif summary_type == "technical":
+            difficulty_profile = {"easy": 1, "medium": 3, "hard": 4}
+            cognitive_targets = ["remember", "apply", "analyze", "evaluate"]
+        elif summary_type == "conversational":
+            difficulty_profile = {"easy": 3, "medium": 4, "hard": 1}
+            cognitive_targets = ["remember", "understand", "apply", "analyze"]
+        else:
+            difficulty_profile = {"easy": 2, "medium": 4, "hard": 2}
+            cognitive_targets = ["remember", "understand", "apply", "analyze"]
+
+        # 3.2–3.5  Run all independent LLM extraction calls in parallel
+        logger.info("Launching parallel extraction: chapters / glossary / tags / entities / quiz")
+        _parallel_results: dict = {}
+        with ThreadPoolExecutor(max_workers=5) as _executor:
+            _fut_chapters = _executor.submit(
+                llm.extract_chapters, transcript_data["segments"], lang=lang
+            )
+            _fut_glossary = _executor.submit(
+                llm.extract_glossary, text_for_extracts, lang=lang
+            )
+            _fut_tags = (
+                _executor.submit(llm.extract_podcast_tags, transcript_data["segments"], lang=lang)
+                if generate_tags else None
+            )
+            _fut_entities = _executor.submit(
+                llm.extract_entities, transcript_data["segments"], lang=lang
+            )
+            _fut_quiz = _executor.submit(
+                llm.generate_quiz,
+                transcript_data.get("segments", []),
+                lang=lang,
+                count=8,
+                difficulty_profile=difficulty_profile,
+                cognitive_targets=cognitive_targets,
+            )
+
+            for key, fut in [
+                ("chapters", _fut_chapters),
+                ("glossary", _fut_glossary),
+                ("tags", _fut_tags),
+                ("entities", _fut_entities),
+                ("quiz", _fut_quiz),
+            ]:
+                if fut is None:
+                    _parallel_results[key] = None
+                    continue
+                try:
+                    _parallel_results[key] = fut.result()
+                except Exception as _e:
+                    logger.error("Parallel extraction '%s' failed: %s", key, _e, exc_info=True)
+                    _parallel_results[key] = None
+
+        update_episode_status(db, episode, "generating_insights", 0.75)
+
+        def _clean_chapter_title(title: str) -> str:
+            """Turn slash-separated keyword dumps into a readable headline."""
+            if "/" not in title:
+                return title
+            parts = [p.strip() for p in title.split("/") if p.strip()]
+            return " ".join(parts) if parts else title
+
+        # 3.2 Chapters — write results to DB
         try:
-            chapters_data = llm.extract_chapters(transcript_data["segments"], lang=lang)
-            update_episode_status(db, episode, "extracting_chapters", 0.75)
-
-            # Fallback: derive a book-style table of contents from topic segments +
-            # insights when the LLM produced too few chapters (e.g. weak local model).
-            if len(chapters_data) < 2 and topic_transitions:
-                derived: list = []
-                for tt in topic_transitions:
-                    t_start = float(tt.get("start", 0.0) or 0.0)
-                    t_end = float(tt.get("end", t_start + 1e9) or (t_start + 1e9))
-                    # Find an insight inside this topic window for the description.
-                    desc = ""
-                    for ins in (merged_attr or []):
-                        s = float(ins.get("start", -1) or -1)
-                        if t_start <= s < t_end and ins.get("insight"):
-                            desc = str(ins["insight"]).strip()
-                            break
-                    title = str(tt.get("topic", "") or "").strip()
-                    if not title:
-                        continue
-                    derived.append({
-                        "timestamp": t_start,
-                        "title": title,
-                        "summary": desc,
-                        "is_main": "True",
-                    })
-                if len(derived) >= 2:
-                    print(f"Using {len(derived)} fallback chapters from topic segments.")
-                    chapters_data = derived
-
+            raw_ch = _parallel_results.get("chapters") or []
+            for ch in raw_ch:
+                ch["title"] = _clean_chapter_title(ch.get("title", "Untitled Chapter"))
+            chapters_data = _normalize_coverage_chapters(
+                raw_chapters=raw_ch,
+                topic_transitions=topic_transitions,
+                segments=transcript_data["segments"],
+                stop_words=stop_words,
+            )
+            logger.info("Saving %d coverage chapters.", len(chapters_data))
             for ch in chapters_data:
-                is_main_val = 1 if str(ch.get("is_main", "True")).lower() == "true" else 0
+                is_main_raw = ch.get("is_main", True)
+                is_main_val = 1 if str(is_main_raw).lower() in {"1", "true", "yes"} else 0
                 chapter = Chapter(
                     episode_id=episode.id,
                     timestamp=float(ch.get("timestamp", 0.0)),
+                    end_timestamp=float(ch.get("end_timestamp")) if ch.get("end_timestamp") is not None else None,
                     title=str(ch.get("title", "Untitled Chapter")),
+                    description=str(ch.get("summary", "")),
                     summary=str(ch.get("summary", "")),
                     is_main=is_main_val
                 )
                 db.add(chapter)
             db.commit()
         except Exception as e:
-            print(f"Chapter extraction failed: {e}")
+            logger.error("Chapter DB write failed: %s", e, exc_info=True)
             db.rollback()
 
-        update_episode_status(db, episode, "generating_insights", 0.8)
-
-        # 3.3 Glossary
+        # 3.3 Glossary — write results to DB
         try:
-            glossary_data = llm.extract_glossary(text_for_extracts, lang=lang)
+            glossary_data = _parallel_results.get("glossary") or []
             for item in glossary_data:
                 glossary_item = Glossary(
                     episode_id=episode.id,
@@ -778,22 +967,16 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 db.add(glossary_item)
             db.commit()
         except Exception as e:
-            print(f"Glossary extraction failed: {e}")
+            logger.error("Glossary DB write failed: %s", e)
             db.rollback()
 
-        # 3.3.1 Smart Tagging (auto tags + color group)
+        # 3.3.1 Smart Tagging — write results to DB
         try:
-            if episode.podcast_id:
-                podcast = db.query(Podcast).filter(Podcast.id == episode.podcast_id).first()
-            else:
-                podcast = None
-
-            if podcast and not podcast.tags:
-                print(f"Generating tags for podcast: {podcast.title} (Lang: {lang})")
-                tags = llm.extract_podcast_tags(transcript_data["segments"], lang=lang)
-                print(f"Raw tags from LLM: {tags}")
+            if generate_tags and _parallel_results.get("tags"):
+                tags = _parallel_results["tags"]
+                logger.debug("Raw tags from LLM: %s", tags)
                 cleaned = []
-                seen = set()
+                seen: set = set()
                 for t in tags:
                     if not isinstance(t, dict):
                         continue
@@ -820,7 +1003,6 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     {"label": (summary_type or "default"), "group": "format"},
                     {"label": "general", "group": "category"},
                 ]
-
                 for cand in fallback_candidates:
                     if len(cleaned) >= 3:
                         break
@@ -830,79 +1012,97 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     seen.add(key)
                     cleaned.append(cand)
 
-                print(f"Final cleaned tags: {cleaned}")
-                podcast.tags = cleaned[:4]
-                db.add(podcast)
+                logger.debug("Final cleaned tags: %s", cleaned)
+                podcast_for_tags.tags = cleaned[:4]
+                db.add(podcast_for_tags)
                 db.commit()
-                print(f"Successfully saved {len(cleaned[:4])} tags to podcast {podcast.id}")
+                logger.info("Successfully saved %d tags to podcast %d", len(cleaned[:4]), podcast_for_tags.id)
         except Exception as e:
-            print(f"Tag generation failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Tag DB write failed: %s", e, exc_info=True)
             db.rollback()
 
-        # 3.4 Entity Extraction + Graph Links (GraphRAG MVP)
+        # 3.4 Entity Extraction + Graph Links (GraphRAG MVP) — write results to DB
         try:
             # Clear old links for reprocess
             db.query(EpisodeEntity).filter(EpisodeEntity.episode_id == episode.id).delete()
             db.query(EntityRelation).filter(EntityRelation.episode_id == episode.id).delete()
             db.commit()
 
-            entities_raw = llm.extract_entities(transcript_data["segments"], lang=lang)
+            entities_raw = _parallel_results.get("entities") or []
             if not isinstance(entities_raw, list):
                 entities_raw = []
 
-            # Normalize + de-duplicate
-            cleaned = []
-            seen = set()
+            _ENTITY_BLOCKLIST = {
+                "good morning", "good evening", "good afternoon", "good night",
+                "hello", "hi", "hey", "welcome", "thank you", "thanks", "bye",
+                "okay", "ok", "right", "yeah", "yes", "no", "well", "so",
+                "today", "yesterday", "tomorrow", "this week", "last week",
+                "podcast", "episode", "show", "host", "guest", "listener",
+                "people", "person", "world", "market", "money", "time",
+                "thing", "way", "place", "part", "point", "fact", "issue",
+            }
+
+            # Normalize + de-duplicate + filter junk
+            cleaned_ents = []
+            seen_ents: set = set()
             for item in entities_raw:
                 if not isinstance(item, dict):
                     continue
                 name = str(item.get("name", "")).strip()
                 ent_type = str(item.get("type", "concept")).strip().lower()
-                if not name:
+                if not name or len(name) < 3:
+                    continue
+                if name.lower() in _ENTITY_BLOCKLIST:
                     continue
                 key = f"{name.lower()}::{ent_type}"
-                if key in seen:
+                if key in seen_ents:
                     continue
-                seen.add(key)
+                seen_ents.add(key)
                 if ent_type not in {"person", "org", "product", "concept"}:
                     ent_type = "concept"
-                cleaned.append({"name": name, "type": ent_type})
+                cleaned_ents.append({"name": name, "type": ent_type})
 
-            cleaned = cleaned[:30]
+            cleaned_ents = cleaned_ents[:30]
 
-            if cleaned:
+            if cleaned_ents:
                 if embedding_service is None:
                     embedding_service = EmbeddingService()
                 entity_rows = []
-                for ent in cleaned:
+                new_ents = []
+                for ent in cleaned_ents:
                     existing = (
                         db.query(Entity)
                         .filter(Entity.name == ent["name"], Entity.type == ent["type"])
                         .first()
                     )
-                    if not existing:
-                        embedding = None
-                        try:
-                            embedding = embedding_service.embed_text(ent["name"])
-                        except Exception as e:
-                            print(f"Entity embedding failed for {ent['name']}: {e}")
-                        existing = Entity(
+                    if existing:
+                        entity_rows.append(existing)
+                    else:
+                        new_ents.append(ent)
+
+                if new_ents:
+                    try:
+                        new_embeddings = embedding_service.embed_batch([e["name"] for e in new_ents])
+                    except Exception as e:
+                        logger.warning("Entity batch embedding failed: %s", e)
+                        new_embeddings = [None] * len(new_ents)
+                    for ent, embedding in zip(new_ents, new_embeddings):
+                        row = Entity(
                             name=ent["name"],
                             type=ent["type"],
                             embedding=embedding,
                         )
-                        db.add(existing)
-                        db.commit()
-                        db.refresh(existing)
-                    entity_rows.append(existing)
+                        db.add(row)
+                        entity_rows.append(row)
+                    db.commit()
+                    for row in entity_rows:
+                        db.refresh(row)
 
                 # Single pass: per-segment entity presence (drives both mention
                 # counts and TRUE co-occurrence relations).
                 segments = transcript_data.get("segments", [])
                 patterns = {ent.id: re.compile(rf"\b{re.escape(ent.name)}\b", re.IGNORECASE) for ent in entity_rows}
-                seg_entity_sets: list = []          # set of entity_id present, per segment
+                seg_entity_sets: list = []
                 stats: dict = {eid: {"count": 0, "first": None, "last": None} for eid in patterns}
                 for seg in segments:
                     seg_text = seg.get("text", "") or ""
@@ -942,7 +1142,7 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
 
                 edges = 0
                 for (a, b), w in pair_weights.items():
-                    if w < 2:  # prune incidental single-window co-mentions
+                    if w < 2:
                         continue
                     for src_id, tgt_id in ((a, b), (b, a)):
                         db.add(EntityRelation(
@@ -954,36 +1154,13 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                         ))
                     edges += 1
                 db.commit()
-                print(f"Entities: {len(entity_rows)}, co-occurrence edges: {edges}")
+                logger.info("Entities: %d, co-occurrence edges: %d", len(entity_rows), edges)
         except Exception as e:
-            print(f"Entity extraction failed: {e}")
+            logger.error("Entity DB write failed: %s", e, exc_info=True)
             db.rollback()
 
-        # 3.5 Quizzes
+        # 3.5 Quizzes — process and write results to DB
         try:
-            if summary_type == "executive":
-                difficulty_profile = {"easy": 1, "medium": 3, "hard": 4}
-                cognitive_targets = ["understand", "apply", "analyze", "evaluate"]
-            elif summary_type == "technical":
-                difficulty_profile = {"easy": 1, "medium": 3, "hard": 4}
-                cognitive_targets = ["remember", "apply", "analyze", "evaluate"]
-            elif summary_type == "conversational":
-                difficulty_profile = {"easy": 3, "medium": 4, "hard": 1}
-                cognitive_targets = ["remember", "understand", "apply", "analyze"]
-            else:
-                difficulty_profile = {"easy": 2, "medium": 4, "hard": 2}
-                cognitive_targets = ["remember", "understand", "apply", "analyze"]
-
-            # Always use LLM quiz generation first — deterministic produces meaningless keyword extractions
-            print("Generating LLM-based quiz...")
-            quiz_data = llm.generate_quiz(
-                transcript_data.get("segments", []),
-                lang=lang,
-                count=8,
-                difficulty_profile=difficulty_profile,
-                cognitive_targets=cognitive_targets,
-            )
-
             def _is_low_quality_quiz(items):
                 if not isinstance(items, list) or len(items) == 0:
                     return True
@@ -995,12 +1172,11 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     options = item.get("options") if isinstance(item.get("options"), list) else []
                     if q and len(options) >= 3 and len(q) > 15:
                         valid += 1
-                return valid < 3  # Need at least 3 valid questions
+                return valid < 3
 
+            quiz_data = _parallel_results.get("quiz") or []
             if _is_low_quality_quiz(quiz_data):
-                # Summary-based fallback produces MEANINGFUL questions from the
-                # already-LLM-generated insights/takeaways (no 'who said' garbage).
-                print("LLM quiz quality low; using summary-based fallback.")
+                logger.warning("LLM quiz quality low; using summary-based fallback.")
                 quiz_data = build_quiz_from_summary(
                     {
                         "insight_attribution": merged_attr,
@@ -1010,9 +1186,8 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     count=8,
                     lang=lang,
                 )
-                # Last-resort transcript fallback only if summary had nothing usable.
                 if _is_low_quality_quiz(quiz_data):
-                    print("Summary fallback thin; using transcript fallback.")
+                    logger.warning("Summary fallback thin; using transcript fallback.")
                     quiz_data = build_quiz_from_transcript(
                         transcript_data.get("segments", []),
                         speaker_map=episode.speaker_map or {},
@@ -1021,25 +1196,20 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                         difficulty_profile=difficulty_profile,
                         cognitive_targets=cognitive_targets,
                     )
+
             for q in quiz_data:
-                # Validate that q is a dict
                 if not isinstance(q, dict):
-                    print(f"Skipping invalid quiz item (not a dict): {q}")
+                    logger.warning("Skipping invalid quiz item (not a dict): %s", q)
                     continue
-                    
-                # Validate options
                 options = q.get("options")
                 if not isinstance(options, list):
                     options = []
-
-                # Handle correct answer (could be index or text)
                 correct_ans = q.get("correct_answer")
                 if isinstance(correct_ans, int):
                     if 0 <= correct_ans < len(options):
                         correct_ans = options[correct_ans]
                     else:
                         correct_ans = str(correct_ans)
-                
                 quiz_item = Quiz(
                     episode_id=episode.id,
                     question=q.get("question"),
@@ -1055,7 +1225,7 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 db.add(quiz_item)
             db.commit()
         except Exception as e:
-            print(f"Quiz generation failed: {e}")
+            logger.error("Quiz DB write failed: %s", e, exc_info=True)
             db.rollback()
 
         update_episode_status(db, episode, "indexing", 0.9)
@@ -1084,7 +1254,6 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 start_ts = current_chunk[0]["start"]
                 end_ts = current_chunk[-1]["end"]
                 speakers = list({s.get("speaker", "Unknown") for s in current_chunk})
-                embedding = embedding_service.embed_text(combined_text)
                 processed_segments.append({
                     "text": combined_text,
                     "timestamp": start_ts,
@@ -1092,7 +1261,6 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                     "speakers": speakers,
                     "episode_title": episode.title,
                     "show_name": episode.show_name,
-                    "embedding": embedding
                 })
                 current_chunk = []
                 current_chars = 0
@@ -1118,14 +1286,24 @@ def process_podcast(episode_id: int, audio_url: str, lang: str = "en", summary_t
                 last_speaker = seg_speaker
 
             flush_chunk()
+            # Embed all chunks in one batch instead of one model call per chunk
+            if processed_segments:
+                chunk_embeddings = embedding_service.embed_batch([p["text"] for p in processed_segments])
+                for p, emb in zip(processed_segments, chunk_embeddings):
+                    p["embedding"] = emb
             vector_store.upsert_segments(episode_id, processed_segments)
         except Exception as e:
-            print(f"RAG indexing failed: {e}")
+            logger.error("RAG indexing failed: %s", e, exc_info=True)
 
         update_episode_status(db, episode, "completed", 1.0)
 
     except Exception as e:
-        print(f"Task failed: {e}")
+        logger.error("Task failed (attempt %d/%d): %s", self.request.retries + 1, self.max_retries + 1, e, exc_info=True)
+        if self.request.retries < self.max_retries:
+            countdown = 60 * (2 ** self.request.retries)
+            logger.info("Retrying episode %d in %ds", episode_id, countdown)
+            db.close()
+            raise self.retry(exc=e, countdown=countdown)
         if episode:
             update_episode_status(db, episode, "failed")
     finally:
