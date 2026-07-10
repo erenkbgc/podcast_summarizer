@@ -146,13 +146,75 @@ flowchart LR
 
 ## Tech Stack
 
-| Layer | Technologies |
-|-------|-------------|
-| **Frontend** | Next.js 16 · React 19 · Tailwind CSS v4 · Framer Motion · TanStack Query · WaveSurfer.js |
-| **Backend** | FastAPI · SQLAlchemy · Celery · Pydantic v2 · SlowAPI |
-| **AI / ML** | WhisperX · Ollama (Llama 3 / Mistral) · OpenAI · Anthropic · Sentence Transformers |
-| **Storage** | PostgreSQL 15 · Redis 7 · Qdrant 1.12 |
-| **Infrastructure** | Docker Compose · Prometheus metrics · Alembic migrations |
+```mermaid
+graph LR
+    subgraph Frontend
+        NX[Next.js 16]
+        RE[React 19]
+        TW[Tailwind CSS v4]
+        FM[Framer Motion]
+        RQ[TanStack Query]
+        WV[WaveSurfer.js]
+    end
+
+    subgraph Backend
+        FA[FastAPI]
+        SA[SQLAlchemy]
+        CE[Celery]
+        PY[Pydantic v2]
+    end
+
+    subgraph AI_ML["AI / ML"]
+        WX[WhisperX]
+        OL["Ollama / Llama 3"]
+        OA[OpenAI API]
+        AN[Anthropic API]
+        ST[Sentence Transformers]
+    end
+
+    subgraph Infra
+        PG[PostgreSQL 15]
+        RD[Redis 7]
+        QD[Qdrant 1.12]
+        DC[Docker Compose]
+    end
+```
+
+---
+
+## User Journey
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Home as Home Page
+    participant API as FastAPI
+    participant Queue as Celery Queue
+    participant AI as AI Workers
+    participant Episode as Episode View
+
+    User->>Home: Paste podcast URL
+    Home->>API: POST /ingest
+    API->>Queue: Enqueue processing task
+    API-->>Home: episode_id · status pending
+    Home-->>User: Show progress bar via WebSocket
+
+    loop Processing (2–15 min)
+        Queue->>AI: Run pipeline steps
+        AI-->>Home: ws step · progress %
+    end
+
+    AI-->>Home: ws status complete
+    Home->>Episode: Navigate to episode
+    Episode->>API: GET summary · chapters · transcript
+    Episode-->>User: Full intelligence dashboard
+
+    User->>Episode: Ask a question in chat
+    Episode->>API: POST /chat
+    API->>AI: RAG retrieval + LLM generation
+    AI-->>Episode: Streamed answer + sources
+    Episode-->>User: Response with timestamp citations
+```
 
 ---
 
