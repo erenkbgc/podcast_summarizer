@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Chapter } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -18,17 +19,36 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function formatDuration(seconds: number): string {
+  if (!seconds || isNaN(seconds) || seconds <= 0) return "";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 export function ChapterIndexView({ chapters, currentTime, onSeek }: ChapterIndexViewProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<HTMLButtonElement | null>(null);
+
   if (!Array.isArray(chapters) || chapters.length === 0) return null;
 
   // Determine which chapter is currently playing
   let activeIdx = -1;
   for (let i = chapters.length - 1; i >= 0; i--) {
-    if (currentTime >= chapters[i].timestamp) {
+    const endTime = chapters[i].end_timestamp ?? chapters[i + 1]?.timestamp;
+    if (currentTime >= chapters[i].timestamp && (endTime === undefined || currentTime < endTime)) {
       activeIdx = i;
       break;
     }
   }
+
+  // Auto-scroll to active chapter
+  useEffect(() => {
+    if (activeRef.current) {
+      activeRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [activeIdx]);
 
   return (
     <div className="space-y-1">
@@ -39,62 +59,93 @@ export function ChapterIndexView({ chapters, currentTime, onSeek }: ChapterIndex
         <div className="mt-2 h-px w-16 mx-auto bg-border" />
       </div>
 
-      <div className="space-y-0.5">
+      <div className="space-y-0.5" ref={containerRef}>
         {chapters.map((chapter, i) => {
           const isActive = i === activeIdx;
           const nextChapter = chapters[i + 1];
+          const endTime = chapter.end_timestamp ?? nextChapter?.timestamp;
+          const chapterDuration = endTime !== undefined ? endTime - chapter.timestamp : undefined;
           const desc = chapter.summary || chapter.description;
+
+          // Progress through this chapter (0–1)
+          const chapterProgress =
+            isActive && chapterDuration && chapterDuration > 0
+              ? Math.min(1, (currentTime - chapter.timestamp) / chapterDuration)
+              : 0;
 
           return (
             <button
               key={i}
+              ref={isActive ? activeRef : null}
               onClick={() => onSeek(chapter.timestamp)}
               className={cn(
                 "w-full text-left group rounded-xl px-4 py-3 transition-all",
-                isActive ? "bg-primary/10" : "hover:bg-secondary/40"
+                isActive
+                  ? "bg-primary/10 border border-primary/20"
+                  : "hover:bg-secondary/40 border border-transparent"
               )}
             >
-              {/* Title row with dotted leader + timestamp (book TOC style) */}
-              <div className="flex items-baseline gap-2">
-                <span
-                  className={cn(
-                    "shrink-0 w-6 text-[11px] font-mono font-bold tabular-nums",
-                    isActive ? "text-primary" : "text-muted-foreground/50"
-                  )}
-                >
-                  {(i + 1).toString().padStart(2, "0")}
-                </span>
-                <span
-                  className={cn(
-                    "font-heading font-bold text-sm leading-tight",
-                    isActive ? "text-primary" : "text-foreground group-hover:text-primary/80"
-                  )}
-                >
-                  {chapter.title}
-                </span>
-                <span className="flex-1 border-b border-dotted border-border/60 relative top-[-3px] mx-1" />
-                <span
-                  className={cn(
-                    "shrink-0 font-mono text-[11px] tabular-nums",
-                    isActive ? "text-primary font-bold" : "text-muted-foreground"
-                  )}
-                >
+              {/* Chapter number, title, timestamps */}
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span
+                      className={cn(
+                        "shrink-0 text-[10px] font-mono font-bold tabular-nums",
+                        isActive ? "text-primary" : "text-muted-foreground/60"
+                      )}
+                    >
+                      {(i + 1).toString().padStart(2, "0")}
+                    </span>
+                    <span
+                      className={cn(
+                        "font-heading font-bold text-sm leading-tight flex-1",
+                        isActive ? "text-primary" : "text-foreground group-hover:text-primary/80"
+                      )}
+                    >
+                      {chapter.title}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Duration badge */}
+                {chapterDuration !== undefined && chapterDuration > 0 && (
+                  <span
+                    className={cn(
+                      "shrink-0 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-md",
+                      isActive
+                        ? "bg-primary/20 text-primary"
+                        : "bg-secondary/50 text-muted-foreground/70"
+                    )}
+                  >
+                    {formatDuration(chapterDuration)}
+                  </span>
+                )}
+              </div>
+
+              {/* Timestamp range */}
+              <div className="ml-8 mb-1">
+                <span className={cn("text-[10px] font-mono font-semibold", isActive ? "text-primary/70" : "text-muted-foreground/60")}>
                   {formatTime(chapter.timestamp)}
+                  {endTime !== undefined && ` → ${formatTime(endTime)}`}
                 </span>
               </div>
 
-              {/* One-sentence description below the title */}
-              {desc && (
-                <p className="mt-1.5 ml-8 mr-12 text-xs leading-relaxed text-muted-foreground">
-                  {desc}
-                </p>
+              {/* Progress bar for active chapter */}
+              {isActive && chapterDuration !== undefined && chapterDuration > 0 && (
+                <div className="ml-8 mt-2 h-0.5 bg-primary/20 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary rounded-full transition-all duration-500"
+                    style={{ width: `${chapterProgress * 100}%` }}
+                  />
+                </div>
               )}
 
-              {/* Subtle duration hint */}
-              {nextChapter && (
-                <span className="mt-1 ml-8 inline-block text-[9px] font-mono uppercase tracking-widest text-muted-foreground/40">
-                  {formatTime(chapter.timestamp)} – {formatTime(nextChapter.timestamp)}
-                </span>
+              {/* One-sentence description */}
+              {desc && (
+                <p className="mt-2 ml-8 text-xs leading-relaxed text-muted-foreground line-clamp-2">
+                  {desc}
+                </p>
               )}
             </button>
           );

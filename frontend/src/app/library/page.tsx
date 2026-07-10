@@ -7,17 +7,13 @@ import { ConfirmModal } from '@/components/ConfirmModal';
 import {
     Plus,
     Search,
-    Filter,
     PlayCircle,
-    Clock,
-    CheckCircle2,
     AlertCircle,
     Podcast,
-    MoreVertical,
-    BookOpen,
-    Activity,
     Trash2,
-    PlusCircle
+    X,
+    ChevronDown,
+    SortDesc,
 } from 'lucide-react';
 
 import api, { Episode, getEpisodes } from '@/lib/api';
@@ -58,6 +54,8 @@ const inferTagGroup = (label: string) => {
     return "default";
 };
 
+type SortOption = 'newest' | 'oldest' | 'title' | 'status';
+
 export default function LibraryPage() {
     const { user, isLoading: authLoading } = useAuth();
     const router = useRouter();
@@ -68,6 +66,11 @@ export default function LibraryPage() {
         isOpen: false,
         id: null
     });
+    const [searchQuery, setSearchQuery] = useState('');
+    const [activeTag, setActiveTag] = useState<string | null>(null);
+    const [sortBy, setSortBy] = useState<SortOption>('newest');
+    const [showSort, setShowSort] = useState(false);
+    const searchRef = useRef<HTMLInputElement>(null);
 
     const { data: episodes = [], isLoading: dataLoading, isError, error, refetch } = useQuery({
         queryKey: ['episodes'],
@@ -81,6 +84,41 @@ export default function LibraryPage() {
 
     // Effective loading state: wait for auth OR data (but only on first load)
     const isLoading = dataLoading && episodes.length === 0;
+
+    // Collect all unique tags from loaded episodes
+    const allTags = Array.from(
+        new Set(episodes.flatMap((e: Episode) => (e.podcast_tags || []).map((t: any) => t.label)))
+    ) as string[];
+
+    // Client-side filter + sort
+    const filteredEpisodes = episodes
+        .filter((ep: Episode) => {
+            const q = searchQuery.toLowerCase();
+            const matchText = !q || ep.title.toLowerCase().includes(q) || (ep.show_name || '').toLowerCase().includes(q);
+            const matchTag = !activeTag || (ep.podcast_tags || []).some((t: any) => t.label === activeTag);
+            return matchText && matchTag;
+        })
+        .sort((a: Episode, b: Episode) => {
+            if (sortBy === 'newest') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+            if (sortBy === 'oldest') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+            if (sortBy === 'title') return a.title.localeCompare(b.title);
+            if (sortBy === 'status') return (a.status || '').localeCompare(b.status || '');
+            return 0;
+        });
+
+    const hasFilters = searchQuery || activeTag;
+
+    // Cmd+K focuses search
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                searchRef.current?.focus();
+            }
+        };
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+    }, []);
 
     const handleDelete = async (id: number) => {
         deletingIds.current.add(id);
@@ -113,14 +151,89 @@ export default function LibraryPage() {
             <Sidebar />
 
             <main className="flex-1 flex flex-col overflow-hidden">
-                <header className="h-16 border-b border-border bg-card/50 backdrop-blur-md flex items-center justify-between px-8 shrink-0 z-10">
-                    <div className="flex items-center gap-4 flex-1 max-w-xl">
+                <header className="border-b border-border bg-card/50 backdrop-blur-md px-8 py-3 shrink-0 z-10 space-y-3">
+                    <div className="flex items-center justify-between h-10">
                         <h2 className="text-xl font-bold">Workspace Library</h2>
+                        <div className="flex items-center gap-3">
+                            {/* Sort */}
+                            <div className="relative">
+                                <button
+                                    onClick={() => setShowSort(v => !v)}
+                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-secondary/30 text-xs font-bold hover:bg-secondary/60 transition-all"
+                                >
+                                    <SortDesc size={14} />
+                                    {sortBy === 'newest' ? 'Newest' : sortBy === 'oldest' ? 'Oldest' : sortBy === 'title' ? 'A–Z' : 'Status'}
+                                    <ChevronDown size={12} />
+                                </button>
+                                {showSort && (
+                                    <div className="absolute right-0 mt-1 w-36 rounded-xl border border-border bg-card shadow-2xl overflow-hidden z-50">
+                                        {(['newest', 'oldest', 'title', 'status'] as SortOption[]).map(opt => (
+                                            <button
+                                                key={opt}
+                                                onClick={() => { setSortBy(opt); setShowSort(false); }}
+                                                className={cn("w-full text-left px-4 py-2.5 text-xs font-medium hover:bg-secondary/40 capitalize", sortBy === opt && "text-primary font-bold")}
+                                            >
+                                                {opt === 'newest' ? 'Newest first' : opt === 'oldest' ? 'Oldest first' : opt === 'title' ? 'Title A–Z' : 'By status'}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            <Link href="/" className="bg-primary text-white px-4 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2">
+                                <Plus size={16} /> New
+                            </Link>
+                        </div>
                     </div>
+
+                    {/* Search row */}
                     <div className="flex items-center gap-3">
-                        <Link href="/" className="bg-primary text-white px-4 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2">
-                            <Plus size={16} /> New
-                        </Link>
+                        <div className="relative flex-1 max-w-sm">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                            <input
+                                ref={searchRef}
+                                type="text"
+                                placeholder="Search library... (Cmd+K)"
+                                value={searchQuery}
+                                onChange={e => setSearchQuery(e.target.value)}
+                                className="w-full bg-secondary/30 border border-white/5 rounded-full py-1.5 pl-9 pr-4 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground transition-all"
+                            />
+                            {searchQuery && (
+                                <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white">
+                                    <X size={12} />
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Tag filter pills */}
+                        <div className="flex items-center gap-1.5 overflow-x-auto">
+                            {allTags.slice(0, 8).map(tag => (
+                                <button
+                                    key={tag}
+                                    onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+                                    className={cn(
+                                        "px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border whitespace-nowrap transition-all",
+                                        activeTag === tag
+                                            ? "bg-primary text-black border-primary"
+                                            : "bg-secondary/30 text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
+                                    )}
+                                >
+                                    {tag}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Result count + clear */}
+                        {hasFilters && (
+                            <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                <span className="text-xs text-muted-foreground">{filteredEpisodes.length} result{filteredEpisodes.length !== 1 ? 's' : ''}</span>
+                                <button
+                                    onClick={() => { setSearchQuery(''); setActiveTag(null); }}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-muted-foreground hover:text-foreground"
+                                >
+                                    <X size={10} /> Clear
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </header>
 
@@ -157,13 +270,22 @@ export default function LibraryPage() {
                                     <h3 className="text-2xl font-bold">Library Empty</h3>
                                     <Link href="/" className="text-primary mt-4 hover:underline">Start your first ingest</Link>
                                 </div>
+                            ) : filteredEpisodes.length === 0 && hasFilters ? (
+                                <div className="flex flex-col items-center justify-center py-32 text-center">
+                                    <Search className="w-12 h-12 text-muted-foreground/30 mb-4" />
+                                    <h3 className="text-lg font-bold">No results</h3>
+                                    <p className="text-sm text-muted-foreground mt-2">Try a different search or clear filters.</p>
+                                    <button onClick={() => { setSearchQuery(''); setActiveTag(null); }} className="mt-4 px-4 py-2 rounded-lg bg-secondary text-sm font-bold">Clear filters</button>
+                                </div>
                             ) : (
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                                    {episodes.map((episode) => (
+                                    {filteredEpisodes.map((episode: Episode) => (
                                         <EpisodeCard
                                             key={episode.id}
                                             episode={episode}
                                             onDelete={(id) => setConfirmDelete({ isOpen: true, id })}
+                                            onTagClick={(tag) => setActiveTag(activeTag === tag ? null : tag)}
+                                            activeTag={activeTag}
                                         />
                                     ))}
                                 </div>
@@ -184,8 +306,23 @@ export default function LibraryPage() {
     );
 }
 
-// Reusing EpisodeCard 
-function EpisodeCard({ episode, onDelete }: { episode: Episode; onDelete: (id: number) => void }) {
+const PROCESSING_STAGES: Record<string, string> = {
+    downloading: 'Downloading…',
+    transcribing: 'Transcribing…',
+    identifying_speakers: 'Identifying speakers…',
+    translating: 'Translating…',
+    summarizing: 'Summarizing…',
+    extracting_chapters: 'Extracting chapters…',
+    generating_insights: 'Generating insights…',
+    indexing: 'Indexing…',
+};
+
+function EpisodeCard({ episode, onDelete, onTagClick, activeTag }: {
+    episode: Episode;
+    onDelete: (id: number) => void;
+    onTagClick?: (tag: string) => void;
+    activeTag?: string | null;
+}) {
     const [showMenu, setShowMenu] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -233,18 +370,36 @@ function EpisodeCard({ episode, onDelete }: { episode: Episode; onDelete: (id: n
                         {episode.podcast_tags.slice(0, 3).map((tag: any, idx: number) => {
                             const group = tag.group || inferTagGroup(tag.label);
                             const colorClass = TAG_GROUP_COLORS[group] || TAG_GROUP_COLORS.default;
+                            const isActive = activeTag === tag.label;
                             return (
-                                <span
+                                <button
                                     key={idx}
+                                    onClick={(e) => { e.preventDefault(); onTagClick?.(tag.label); }}
                                     className={cn(
-                                        "px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border",
+                                        "px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border z-20 relative transition-all",
+                                        isActive ? "ring-1 ring-primary scale-105" : "",
                                         colorClass
                                     )}
                                 >
                                     {tag.label}
-                                </span>
+                                </button>
                             );
                         })}
+                    </div>
+                )}
+
+                {/* In-progress stage + progress bar */}
+                {episode.status && PROCESSING_STAGES[episode.status] && (
+                    <div className="pt-1 space-y-1">
+                        <div className="text-[9px] font-bold uppercase tracking-wider text-primary/80">
+                            {PROCESSING_STAGES[episode.status]}
+                        </div>
+                        <div className="h-1 bg-secondary/40 rounded-full overflow-hidden">
+                            <div
+                                className="h-full bg-primary rounded-full transition-all duration-500"
+                                style={{ width: `${Math.max(5, (episode.progress || 0) * 100)}%` }}
+                            />
+                        </div>
                     </div>
                 )}
             </div>

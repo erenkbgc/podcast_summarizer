@@ -12,12 +12,14 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
+import type WaveSurfer from "wavesurfer.js";
 
 interface AudioPlayerProps {
     episodeTitle: string;
     showName: string;
     imageUrl?: string;
     audioUrl: string;
+    episodeId?: string | number;
     chapters?: { timestamp: number; title?: string }[];
     currentTime: number;
     duration: number;
@@ -33,6 +35,7 @@ export function PremiumAudioPlayer({
     showName,
     imageUrl,
     audioUrl,
+    episodeId,
     chapters = [],
     currentTime,
     duration,
@@ -48,7 +51,13 @@ export function PremiumAudioPlayer({
     const [playbackRate, setPlaybackRate] = useState(1);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
     const [isWaveReady, setIsWaveReady] = useState(false);
+    const [tooltipTime, setTooltipTime] = useState<number | null>(null);
+    const [tooltipX, setTooltipX] = useState(0);
     const lastSyncTime = useRef(currentTime);
+    const lastSaveTime = useRef(0);
+    const [resumePosition, setResumePosition] = useState<number | null>(null);
+
+    const storageKey = episodeId ? `podai_pos_${episodeId}` : null;
 
     // Keep latest callbacks in refs so the WaveSurfer instance is created
     // exactly once per audioUrl. Parent components recreate these handlers on
@@ -58,6 +67,23 @@ export function PremiumAudioPlayer({
     useEffect(() => {
         callbacksRef.current = { onTimeUpdate, onDurationChange, onSeek };
     });
+
+    // Handle waveform hover tooltip
+    const handleWaveHover = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!waveContainerRef.current || duration <= 0) return;
+        
+        const rect = waveContainerRef.current.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percentage = Math.max(0, Math.min(1, x / rect.width));
+        const time = percentage * duration;
+        
+        setTooltipTime(time);
+        setTooltipX(percentage * 100);
+    };
+
+    const handleWaveLeave = () => {
+        setTooltipTime(null);
+    };
 
     // Initialize WaveSurfer (lazy-loaded, once per audio source)
     useEffect(() => {
@@ -89,11 +115,26 @@ export function PremiumAudioPlayer({
                     callbacksRef.current.onTimeUpdate(time);
                     lastSyncTime.current = time;
                 }
+                // Save position to localStorage every 5s
+                if (storageKey && time > 10) {
+                    const now = Date.now();
+                    if (now - lastSaveTime.current > 5000) {
+                        lastSaveTime.current = now;
+                        localStorage.setItem(storageKey, String(time));
+                    }
+                }
             });
 
             ws.on("ready", (dur) => {
                 setIsWaveReady(true);
                 callbacksRef.current.onDurationChange(dur);
+                // Check for saved position
+                if (storageKey) {
+                    const saved = parseFloat(localStorage.getItem(storageKey) || "0");
+                    if (saved > 10 && saved < dur - 5) {
+                        setResumePosition(saved);
+                    }
+                }
             });
 
             ws.on("interaction", (newTime) => {
@@ -139,10 +180,55 @@ export function PremiumAudioPlayer({
         }
     }, [currentTime]);
 
+    const handleResume = () => {
+        if (resumePosition !== null && wavesurfer.current && duration > 0) {
+            wavesurfer.current.setTime(resumePosition);
+            onSeek(resumePosition);
+        }
+        setResumePosition(null);
+    };
+
+    const handleDismissResume = () => {
+        setResumePosition(null);
+        if (storageKey) localStorage.removeItem(storageKey);
+    };
+
     const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
     return (
-        <div className="shrink-0 border-t border-border bg-card/40 backdrop-blur-2xl px-4 py-3 print:hidden">
+        <div className="shrink-0 border-t border-border bg-card/40 backdrop-blur-2xl print:hidden">
+            <AnimatePresence>
+                {resumePosition !== null && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                    >
+                        <div className="flex items-center justify-between px-6 py-2 bg-primary/10 border-b border-primary/20">
+                            <span className="text-xs font-bold text-primary/90">
+                                Resume from {formatTime(resumePosition)}?
+                            </span>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={handleResume}
+                                    className="px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-lg bg-primary text-black hover:bg-primary/80 transition-all"
+                                >
+                                    Resume
+                                </button>
+                                <button
+                                    onClick={handleDismissResume}
+                                    className="px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-lg border border-white/10 text-muted-foreground hover:text-white transition-all"
+                                >
+                                    Start over
+                                </button>
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            <div className="px-4 py-3">
             <motion.div
                 initial={{ y: 30, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
@@ -188,7 +274,23 @@ export function PremiumAudioPlayer({
                         </span>
 
                         <div className="flex-1 relative h-10 flex items-center">
-                            <div ref={waveContainerRef} className="w-full" />
+                            <div 
+                                ref={waveContainerRef} 
+                                className="w-full relative"
+                                onMouseMove={handleWaveHover}
+                                onMouseLeave={handleWaveLeave}
+                            />
+                            
+                            {/* Waveform Hover Tooltip */}
+                            {tooltipTime !== null && (
+                                <div
+                                    className="absolute bottom-full mb-2 bg-black/95 border border-white/10 px-2 py-1 rounded-lg text-[9px] font-mono font-black text-primary pointer-events-none whitespace-nowrap z-50"
+                                    style={{ left: `${tooltipX}%`, transform: 'translateX(-50%)' }}
+                                >
+                                    {formatTime(tooltipTime)}
+                                </div>
+                            )}
+                            
                             {duration > 0 && chapters.length > 0 && (
                                 <div className="absolute inset-x-0 top-0 h-full pointer-events-none">
                                     {chapters.map((ch, idx) => {
@@ -267,6 +369,7 @@ export function PremiumAudioPlayer({
                     </button>
                 </div>
             </motion.div>
+            </div>
         </div>
     );
 }

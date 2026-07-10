@@ -6,12 +6,10 @@ import {
   FileText, Users, Flame, Share2, Download, ShieldCheck, ShieldAlert,
   Lightbulb, AlertTriangle, TrendingUp, HelpCircle, Zap, Link2,
 } from "lucide-react";
-import {
-  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
-  Tooltip as ReTooltip, ResponsiveContainer,
-} from "recharts";
+import dynamic from "next/dynamic";
 import { Summary } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { TopicTimeline } from "./TopicTimeline";
 
 interface Props {
   summary: Summary | null;
@@ -20,9 +18,17 @@ interface Props {
   onSeek: (time: number) => void;
   speakerMap?: Record<string, string>;
   episodeId?: number | string;
+  currentTime?: number;
 }
 
 const SPEAKER_COLORS = ["#3E5BFF", "#34d399", "#f59e0b", "#a78bfa", "#ec4899", "#22d3ee", "#f97316"];
+
+// recharts (~400KB) is only needed on the Analytics tab — load it lazily so it
+// stays out of the main episode bundle.
+const chartLoading = () => <div className="w-full h-full animate-pulse rounded-xl bg-secondary/40" />;
+const SpeakerPie = dynamic(() => import("./SummaryCharts").then((m) => m.SpeakerPie), { ssr: false, loading: chartLoading });
+const DensityArea = dynamic(() => import("./SummaryCharts").then((m) => m.DensityArea), { ssr: false, loading: chartLoading });
+const InsightBars = dynamic(() => import("./SummaryCharts").then((m) => m.InsightBars), { ssr: false, loading: chartLoading });
 
 function formatTime(seconds: number): string {
   if (isNaN(seconds)) return "0:00";
@@ -33,10 +39,14 @@ function formatTime(seconds: number): string {
 
 type TabId = "overview" | "analytics" | "deepdive" | "notes";
 
-export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap, episodeId }: Props) {
+export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap, episodeId, currentTime }: Props) {
   const [tab, setTab] = useState<TabId>("overview");
   const [persona, setPersona] = useState<string>("");
   const [copied, setCopied] = useState<number | null>(null);
+  const [insightsExpanded, setInsightsExpanded] = useState(false);
+  const [actionsExpanded, setActionsExpanded] = useState(false);
+  const [quotesExpanded, setQuotesExpanded] = useState(false);
+  const [globalSummaryExpanded, setGlobalSummaryExpanded] = useState(false);
 
   const s = (summary || {}) as any;
 
@@ -173,6 +183,19 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
               <section className="space-y-3">
                 <span className="text-[10px] font-black uppercase tracking-[0.25em] text-primary">Key Takeaway</span>
                 <p className="text-2xl leading-relaxed font-medium text-foreground font-heading">{summary.executive_brief}</p>
+                {summary.global_summary && summary.global_summary !== summary.executive_brief && (
+                  <div>
+                    {globalSummaryExpanded ? (
+                      <p className="text-muted-foreground leading-relaxed text-sm mt-2">{summary.global_summary}</p>
+                    ) : null}
+                    <button
+                      onClick={() => setGlobalSummaryExpanded(v => !v)}
+                      className="text-xs font-bold text-primary/60 hover:text-primary transition-colors mt-1"
+                    >
+                      {globalSummaryExpanded ? "Show less" : "Read full summary →"}
+                    </button>
+                  </div>
+                )}
               </section>
             )}
 
@@ -209,7 +232,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
               <section className="space-y-5">
                 <SectionTitle icon={BookOpen}>Key Insights</SectionTitle>
                 <div className="space-y-3">
-                  {insights.slice(0, 8).map((insight, i) => (
+                  {(insightsExpanded ? insights : insights.slice(0, 3)).map((insight, i) => (
                     <div key={i} className="p-5 bg-card rounded-2xl border border-border hover:border-primary/40 transition-colors group">
                       <div className="flex gap-3">
                         <span className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center">{i + 1}</span>
@@ -226,6 +249,11 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                     </div>
                   ))}
                 </div>
+                {insights.length > 3 && (
+                  <button onClick={() => setInsightsExpanded(v => !v)} className="text-xs font-bold text-primary/70 hover:text-primary transition-colors flex items-center gap-1">
+                    {insightsExpanded ? `Show less` : `Show ${insights.length - 3} more insights`}
+                  </button>
+                )}
               </section>
             )}
 
@@ -233,7 +261,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
               <section className="space-y-5">
                 <SectionTitle icon={CheckCircle2} color="text-emerald-500">Action Items</SectionTitle>
                 <div className="space-y-2">
-                  {actions.slice(0, 8).map((item: any, i: number) => {
+                  {(actionsExpanded ? actions : actions.slice(0, 3)).map((item: any, i: number) => {
                     const text = typeof item === "string" ? item : item.text;
                     const priority = typeof item === "object" ? item.priority : null;
                     return (
@@ -250,6 +278,11 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                     );
                   })}
                 </div>
+                {actions.length > 3 && (
+                  <button onClick={() => setActionsExpanded(v => !v)} className="text-xs font-bold text-emerald-500/70 hover:text-emerald-400 transition-colors flex items-center gap-1">
+                    {actionsExpanded ? `Show less` : `Show ${actions.length - 3} more actions`}
+                  </button>
+                )}
               </section>
             )}
 
@@ -257,7 +290,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
               <section className="space-y-5">
                 <SectionTitle icon={Quote} color="text-purple-400">Memorable Quotes</SectionTitle>
                 <div className="space-y-3">
-                  {quotes.slice(0, 5).map((quote, i) => (
+                  {(quotesExpanded ? quotes : quotes.slice(0, 2)).map((quote: any, i: number) => (
                     <div key={i} className="p-5 bg-card rounded-2xl border border-border relative overflow-hidden">
                       <div className="absolute top-3 left-4 text-4xl leading-none text-purple-400/30 font-serif">&ldquo;</div>
                       <p className="italic text-foreground leading-relaxed pl-8">{quote.text || quote}</p>
@@ -272,6 +305,11 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                     </div>
                   ))}
                 </div>
+                {quotes.length > 2 && (
+                  <button onClick={() => setQuotesExpanded(v => !v)} className="text-xs font-bold text-purple-400/70 hover:text-purple-400 transition-colors flex items-center gap-1">
+                    {quotesExpanded ? `Show less` : `Show ${quotes.length - 2} more quotes`}
+                  </button>
+                )}
               </section>
             )}
 
@@ -289,14 +327,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
                 <SectionTitle icon={Users}>Voice Distribution</SectionTitle>
                 <div className="grid md:grid-cols-2 gap-6 items-center p-6 rounded-3xl bg-card border border-border">
                   <div className="h-56 relative">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={speakerData} cx="50%" cy="50%" innerRadius={56} outerRadius={80} paddingAngle={4} dataKey="value" isAnimationActive={false}>
-                          {speakerData.map((e, i) => <Cell key={i} fill={SPEAKER_COLORS[i % SPEAKER_COLORS.length]} stroke="none" />)}
-                        </Pie>
-                        <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} itemStyle={{ color: "#fff" }} formatter={(v: any) => `${Number(v).toFixed(0)}%`} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    <SpeakerPie data={speakerData} colors={SPEAKER_COLORS} />
                     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                       <span className="text-[10px] font-black text-muted-foreground uppercase">Speakers</span>
                       <span className="text-lg font-black text-foreground">{speakerData.length}</span>
@@ -319,15 +350,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
               <section className="space-y-4">
                 <SectionTitle icon={TrendingUp}>Conversation Density</SectionTitle>
                 <div className="p-6 rounded-3xl bg-card border border-border h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={densityData} onClick={(e: any) => e?.activePayload && onSeek(e.activePayload[0].payload.t)}>
-                      <defs><linearGradient id="dens" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3E5BFF" stopOpacity={0.5} /><stop offset="100%" stopColor="#3E5BFF" stopOpacity={0} /></linearGradient></defs>
-                      <XAxis dataKey="t" tickFormatter={formatTime} stroke="#666" fontSize={10} />
-                      <YAxis hide />
-                      <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} labelFormatter={(l: any) => formatTime(l)} />
-                      <Area type="monotone" dataKey="v" stroke="#3E5BFF" strokeWidth={2} fill="url(#dens)" isAnimationActive={false} />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                  <DensityArea data={densityData} onSeek={onSeek} formatTime={formatTime} />
                 </div>
                 <p className="text-[11px] text-muted-foreground">Click the chart to jump to that point in the episode.</p>
               </section>
@@ -337,14 +360,7 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
               <section className="space-y-4">
                 <SectionTitle icon={Zap} color="text-amber-400">Insight Intensity</SectionTitle>
                 <div className="p-6 rounded-3xl bg-card border border-border h-48">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={insightTl} onClick={(e: any) => e?.activePayload && onSeek(e.activePayload[0].payload.t)}>
-                      <XAxis dataKey="t" tickFormatter={formatTime} stroke="#666" fontSize={10} />
-                      <YAxis hide />
-                      <ReTooltip contentStyle={{ background: "#09090b", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 11 }} labelFormatter={(l: any) => formatTime(l)} />
-                      <Bar dataKey="v" fill="#f59e0b" radius={[3, 3, 0, 0]} isAnimationActive={false} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <InsightBars data={insightTl} onSeek={onSeek} formatTime={formatTime} />
                 </div>
               </section>
             )}
@@ -352,21 +368,13 @@ export function SummaryDashboard({ summary, status, progress, onSeek, speakerMap
             {topics.length > 0 && (
               <section className="space-y-4">
                 <SectionTitle icon={Layers} color="text-cyan-400">Topic Flow</SectionTitle>
-                <div className="space-y-2">
-                  {topics.map((t, i) => {
-                    const total = topics[topics.length - 1]?.end || 1;
-                    const width = ((t.end - t.start) / total) * 100;
-                    return (
-                      <button key={i} onClick={() => onSeek(t.start)} className="w-full text-left group">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">{t.topic}</span>
-                          <span className="text-[10px] font-mono text-muted-foreground">{formatTime(t.start)}–{formatTime(t.end)}</span>
-                        </div>
-                        <div className="h-2.5 rounded-full" style={{ width: `${Math.max(8, width)}%`, background: t.color || SPEAKER_COLORS[i % SPEAKER_COLORS.length] }} />
-                      </button>
-                    );
-                  })}
-                </div>
+                <TopicTimeline
+                  items={topics}
+                  onSeek={onSeek}
+                  formatTime={formatTime}
+                  colors={SPEAKER_COLORS}
+                  currentTime={currentTime}
+                />
               </section>
             )}
 

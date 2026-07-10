@@ -11,13 +11,16 @@ import {
     ArrowLeft,
     Sparkles,
     Download,
-    ChevronDown
+    ChevronDown,
+    Share2,
+    Check,
 } from 'lucide-react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
 
 import { usePodcastSocket } from '@/hooks/usePodcastSocket';
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 
 export default function EpisodeWorkspace() {
     const { id } = useParams();
@@ -38,7 +41,11 @@ export default function EpisodeWorkspace() {
     const [error, setError] = useState<string | null>(null);
     const [showExport, setShowExport] = useState(false);
     const [persona, setPersona] = useState<'default' | 'investor' | 'skeptic'>('default');
+    const [copied, setCopied] = useState(false);
     const pieceInFlight = useRef<Record<string, boolean>>({});
+    // Guards the one-time "final" refetch after completion; without it, each
+    // setState below re-runs the incremental-fetch effect and force-refetches forever.
+    const didFinalRefetch = useRef(false);
 
     // Real-time updates
     const { status: wsStatus, progress: wsProgress, isConnected } = usePodcastSocket(id ? id as string : '');
@@ -61,9 +68,29 @@ export default function EpisodeWorkspace() {
         }
     }, [id, token]);
 
+    useEffect(() => {
+        if (!id || !token || isConnected || ['completed', 'failed'].includes(currentStatus || '')) {
+            return;
+        }
+
+        const interval = setInterval(() => {
+            fetchData();
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [id, token, isConnected, currentStatus]);
+
+    // Re-fetch the summary once when persona changes
+    useEffect(() => {
+        didFinalRefetch.current = false;
+    }, [persona]);
+
     // Incremental Data Fetching based on status
     useEffect(() => {
         if (!id || !token) return;
+
+        const finalRefetch = currentStatus === 'completed' && !didFinalRefetch.current;
+        if (finalRefetch) didFinalRefetch.current = true;
 
         const fetchPiece = async (key: string, url: string, setter: (data: any) => void) => {
             if (pieceInFlight.current[key]) return;
@@ -87,9 +114,8 @@ export default function EpisodeWorkspace() {
             'indexing',
             'completed'
         ].includes(currentStatus || '')) {
-            // Re-fetch transcript if status becomes completed to ensure we have the translated version
-            const forceRefetch = currentStatus === 'completed';
-            if (!hasTranscript || forceRefetch) {
+            // Re-fetch transcript once on completion to ensure we have the final version
+            if (!hasTranscript || finalRefetch) {
                 fetchPiece('transcript', `/v1/episodes/${id}/transcript`, (data) => {
                     if (Array.isArray(data?.segments) && data.segments.length > 0) {
                         setTranscript(data);
@@ -123,19 +149,17 @@ export default function EpisodeWorkspace() {
             });
         }
 
-        // 4. Everything ready?
+        // 4. Everything ready? Re-fetch once on completion to be sure.
         if (['indexing', 'completed'].includes(currentStatus || '')) {
-            // Re-fetch all to be sure
-            const force = currentStatus === 'completed';
-            if (!summary || force) fetchPiece('summary', `/v1/episodes/${id}/summary${persona === 'default' ? '' : `?persona=${persona}`}`, (data) => {
+            if (!summary || finalRefetch) fetchPiece('summary', `/v1/episodes/${id}/summary${persona === 'default' ? '' : `?persona=${persona}`}`, (data) => {
                 if (data) setSummary(data);
             });
-            if (!hasQuiz || force) fetchPiece('quiz', `/v1/episodes/${id}/quiz`, (data) => {
+            if (!hasQuiz || finalRefetch) fetchPiece('quiz', `/v1/episodes/${id}/quiz`, (data) => {
                 if (Array.isArray(data) && data.length > 0) {
                     setQuizzes(data);
                 }
             });
-            if (chapters.length === 0 || force) fetchPiece('chapters', `/v1/episodes/${id}/chapters`, (data) => {
+            if (chapters.length === 0 || finalRefetch) fetchPiece('chapters', `/v1/episodes/${id}/chapters`, (data) => {
                 if (Array.isArray(data) && data.length > 0) {
                     setChapters(data);
                 }
@@ -169,40 +193,17 @@ export default function EpisodeWorkspace() {
         }
     };
 
-    useEffect(() => {
-        if (!id) return;
-
-        const fetchSummary = async () => {
-            try {
-                const res = await api.get(`/v1/episodes/${id}/summary${persona === 'default' ? '' : `?persona=${persona}`}`, {
-                    timeout: REQUEST_TIMEOUTS.long,
-                });
-                if (res.data) setSummary(res.data);
-            } catch (e) {
-                console.warn('Failed to fetch summary', e);
-            }
-        };
-
-        // 1. Initial/status-triggered fetch
-        if (currentStatus === 'completed' || currentStatus === 'indexing') {
-            fetchSummary();
-        }
-
-        // 2. Fallback Polling if status says done but data missing
-        let interval: NodeJS.Timeout;
-        if (currentStatus === 'completed' && !summary) {
-            interval = setInterval(fetchSummary, 3000);
-        }
-
-        return () => {
-            if (interval) clearInterval(interval);
-        };
-    }, [id, persona, currentStatus, summary === null]);
-
     const handleSeek = (time: number) => {
         setCurrentTime(time);
         setIsPlaying(true);
     };
+
+    useKeyboardShortcuts({
+        onPlayPause: () => setIsPlaying(p => !p),
+        onSkipBack: () => handleSeek(Math.max(0, currentTime - 15)),
+        onSkipForward: () => handleSeek(currentTime + 15),
+        enabled: !!episode,
+    });
 
     const formatTime = (seconds: number) => {
         if (isNaN(seconds)) return "0:00";
@@ -249,7 +250,8 @@ export default function EpisodeWorkspace() {
         if (Array.isArray(chapters) && chapters.length) {
             lines.push("## Chapters");
             chapters.forEach((c) => {
-                lines.push(`- [${formatTime(c.timestamp)}] ${c.title}${c.summary ? ` — ${c.summary}` : ""}`);
+                const range = c.end_timestamp ? `${formatTime(c.timestamp)}-${formatTime(c.end_timestamp)}` : formatTime(c.timestamp);
+                lines.push(`- [${range}] ${c.title}${c.summary ? ` — ${c.summary}` : ""}`);
             });
             lines.push("");
         }
@@ -325,6 +327,21 @@ export default function EpisodeWorkspace() {
                             <Sparkles size={14} className="text-primary" />
                             <span className="text-xs font-bold tracking-tight">AI Optimized</span>
                         </div>
+                        {/* Share button */}
+                        <button
+                            onClick={() => {
+                                const url = `${window.location.origin}/episode/${id}?t=${Math.floor(currentTime)}`;
+                                navigator.clipboard.writeText(url).then(() => {
+                                    setCopied(true);
+                                    setTimeout(() => setCopied(false), 2000);
+                                });
+                            }}
+                            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30 text-xs font-bold hover:bg-secondary/60 transition-all"
+                            title="Copy link with current timestamp"
+                        >
+                            {copied ? <Check size={14} className="text-green-400" /> : <Share2 size={14} />}
+                            {copied ? 'Copied!' : 'Share'}
+                        </button>
                         <div className="relative">
                             <button
                                 onClick={() => setShowExport(!showExport)}
@@ -376,6 +393,7 @@ export default function EpisodeWorkspace() {
                     onSeek={handleSeek}
                     speakerMap={episode.speaker_map}
                     episodeId={episode.id}
+                    currentTime={currentTime}
                 />
 
                 {summary && (
@@ -384,6 +402,7 @@ export default function EpisodeWorkspace() {
                         showName={episode.show_name}
                         imageUrl={episode.image_url}
                         audioUrl={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/v1/episodes/${id}/audio?token=${encodeURIComponent(token || '')}`}
+                        episodeId={episode.id}
                         chapters={chapters}
                         currentTime={currentTime}
                         duration={duration}

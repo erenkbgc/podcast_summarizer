@@ -65,7 +65,7 @@ export function IntelligencePanel({ episode, transcript, summary, chapters, quiz
     };
 
     const lang = episode.preferred_lang || "en";
-    const t = (key: string, params?: unknown) => getTranslation(lang, key, params);
+    const t = (key: string, params?: Record<string, string | number> | unknown) => getTranslation(lang, key, params as Record<string, string | number>);
 
     const tabs = [
         { id: "transcript", icon: BookText, label: t("live") },

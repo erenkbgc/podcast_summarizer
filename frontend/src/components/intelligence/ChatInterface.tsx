@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, ArrowRightCircle, BookOpen, BookText, BookmarkPlus, CheckCircle2, ChevronDown, Globe, HelpCircle, MessageSquare, Play, Search, Send, Sparkles, Zap } from "lucide-react";
+import { ArrowRight, ArrowRightCircle, BookOpen, BookText, BookmarkPlus, CheckCircle2, ChevronDown, Clock, Globe, HelpCircle, MessageSquare, Play, Search, Send, Sparkles, Zap } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api, { Episode, REQUEST_TIMEOUTS, Summary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type ChatSource = { timestamp: number; text: string };
+type ChatSource = { timestamp: number; text: string; speaker?: string };
 type ChatAction = {
     type: "seek" | "save_insight" | "create_note" | "search" | "compare_episodes";
     label: string;
@@ -48,6 +48,13 @@ const CHAT_MODES: Record<ChatMode, { icon: React.ReactNode; label: string; descr
     storyteller: { icon: <BookText size={14} />, label: "Storyteller", description: "Narrative-focused explanation" },
     casual: { icon: <MessageSquare size={14} />, label: "Casual", description: "Conversational and informal" },
 };
+
+function formatTime(seconds: number) {
+    if (isNaN(seconds)) return "0:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
 
 const FEATURED_MODES: ChatMode[] = ["assistant", "teacher", "debate", "fact_checker"];
 const ADVANCED_MODES: ChatMode[] = ["researcher", "socratic", "devil_advocate", "storyteller", "casual"];
@@ -209,13 +216,22 @@ export function ChatInterface({ episode, summary, onSeek, t, lang }: { episode: 
                         }
                         try {
                             const data = JSON.parse(dataStr);
-                            if (data.delta) {
-                                fullResponse += data.delta;
-                                // Update the last message with accumulated content
+                            if (data.type === "sources" && Array.isArray(data.data)) {
                                 setMessages((prev) => {
                                     const updated = [...prev];
-                                    if (updated[updated.length - 1].role === "assistant") {
-                                        updated[updated.length - 1].content = fullResponse;
+                                    const last = updated[updated.length - 1];
+                                    if (last?.role === "assistant") {
+                                        updated[updated.length - 1] = { ...last, sources: data.data };
+                                    }
+                                    return updated;
+                                });
+                            } else if (data.delta) {
+                                fullResponse += data.delta;
+                                setMessages((prev) => {
+                                    const updated = [...prev];
+                                    const last = updated[updated.length - 1];
+                                    if (last?.role === "assistant") {
+                                        updated[updated.length - 1] = { ...last, content: fullResponse };
                                     }
                                     return updated;
                                 });
@@ -246,7 +262,7 @@ export function ChatInterface({ episode, summary, onSeek, t, lang }: { episode: 
     const handleAction = (action: ChatAction) => {
         switch (action.type) {
             case "seek":
-                onSeek(action.metadata.timestamp);
+                onSeek(Number(action.metadata.timestamp));
                 break;
             case "save_insight":
             case "search":
@@ -342,7 +358,7 @@ export function ChatInterface({ episode, summary, onSeek, t, lang }: { episode: 
                             {m.actions && m.actions.length > 0 && (
                                 <div className="flex flex-wrap gap-2 px-1">
                                     {[...m.actions]
-                                        .sort((a, b) => (a.metadata.timestamp || 0) - (b.metadata.timestamp || 0))
+                                        .sort((a, b) => (Number(a.metadata.timestamp) || 0) - (Number(b.metadata.timestamp) || 0))
                                         .slice(0, 5)
                                         .map((action, idx) => (
                                             <button
@@ -356,6 +372,23 @@ export function ChatInterface({ episode, summary, onSeek, t, lang }: { episode: 
                                                 {action.label}
                                             </button>
                                         ))}
+                                </div>
+                            )}
+
+                            {m.sources && m.sources.length > 0 && m.role === "assistant" && (
+                                <div className="flex flex-wrap gap-1.5 px-1">
+                                    {m.sources.map((s, idx) => (
+                                        <button
+                                            key={idx}
+                                            onClick={() => onSeek(s.timestamp)}
+                                            title={s.text}
+                                            className="flex items-center gap-1 px-2 py-1 text-[9px] font-semibold rounded-full bg-primary/10 border border-primary/20 text-primary/80 hover:bg-primary/20 hover:text-primary transition-all"
+                                        >
+                                            <Clock size={9} />
+                                            {formatTime(s.timestamp)}
+                                            {s.speaker && ` · ${s.speaker}`}
+                                        </button>
+                                    ))}
                                 </div>
                             )}
 

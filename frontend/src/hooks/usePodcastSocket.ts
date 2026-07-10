@@ -8,91 +8,112 @@ interface WebSocketMessage {
     progress: number;
 }
 
+const WS_CLOSE_CODES = {
+    AUTH_INVALID: 4001,
+    FORBIDDEN: 4003,
+    NORMAL: 4000,
+} as const;
+
+const MAX_RETRIES = 10;
+const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30_000;
+
 export function usePodcastSocket(episodeId: string | number) {
-    const { user } = useAuth();
+    const { token, user } = useAuth();
     const [status, setStatus] = useState<string>('pending');
     const [progress, setProgress] = useState<number>(0);
     const [isConnected, setIsConnected] = useState(false);
-
-    // Determine WS URL
-    // Default to localhost:8000 if not set, but respect protocol (ws/wss)
-    const getWsUrl = () => {
-        const baseUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/status';
-        // Ensure not double slash except protocol
-        return baseUrl.replace(/([^:]\/)\/+/g, "$1");
-    };
+    const [connectionError, setConnectionError] = useState<string | null>(null);
 
     const socketRef = useRef<WebSocket | null>(null);
+    const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const retryCountRef = useRef(0);
+
+    const getWsUrl = useCallback(() => {
+        const base = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws/status';
+        return base.replace(/([^:]\/)\/+/g, '$1');
+    }, []);
 
     const connect = useCallback(() => {
-        if (!episodeId || !user?.id) return;
+        const accessToken = token || (typeof window !== 'undefined' ? localStorage.getItem('podai_token') : null);
+        if (!episodeId || !user?.id || !accessToken) return;
 
-        const url = `${getWsUrl()}/${episodeId}?user_id=${user.id}`;
-        console.log(`[PodAI] Connecting WS to: ${url}`);
+        if (socketRef.current && socketRef.current.readyState !== WebSocket.CLOSED) return;
+
+        const params = new URLSearchParams({ token: accessToken, user_id: user.id });
+        const url = `${getWsUrl()}/${episodeId}?${params.toString()}`;
 
         try {
             const ws = new WebSocket(url);
 
             ws.onopen = () => {
-                console.log(`[PodAI] WS Connected (${episodeId})`);
                 setIsConnected(true);
+                setConnectionError(null);
+                retryCountRef.current = 0;
             };
 
             ws.onmessage = (event) => {
                 try {
                     const data: WebSocketMessage = JSON.parse(event.data);
-                    // Only update if it's for this episode (though backend filters too)
                     if (String(data.episode_id) === String(episodeId)) {
-                        console.log(`[PodAI] WS Update: ${data.status} ${data.progress}%`);
                         setStatus(data.status);
-                        // Don't update progress if it's undefined or null
                         if (typeof data.progress === 'number') {
                             setProgress(data.progress);
                         }
                     }
-                } catch (e) {
-                    console.error('[PodAI] Failed to parse WS message:', e);
+                } catch {
+                    // malformed message — ignore
                 }
             };
 
             ws.onclose = (event) => {
-                console.log(`[PodAI] WS Disconnected (${episodeId}). Code: ${event.code}, Reason: ${event.reason || 'No reason'}, WasClean: ${event.wasClean}`);
                 setIsConnected(false);
 
-                // Auto-reconnect if connection was established before (not initial failure)
-                if (event.code !== 4001 && event.code !== 4003 && event.code !== 4000) {
-                    // Don't reconnect on auth/permission errors
-                    setTimeout(() => {
-                        if (socketRef.current?.readyState === WebSocket.CLOSED) {
-                            console.log(`[PodAI] Attempting reconnect for ${episodeId}...`);
-                            connect();
-                        }
-                    }, 3000); // Reconnect after 3 seconds
+                const isAuthError = (
+                    event.code === WS_CLOSE_CODES.AUTH_INVALID ||
+                    event.code === WS_CLOSE_CODES.FORBIDDEN ||
+                    event.code === WS_CLOSE_CODES.NORMAL
+                );
+
+                if (isAuthError) {
+                    setConnectionError('Authentication error. Please log in again.');
+                    return;
                 }
+
+                const attempt = retryCountRef.current;
+                if (attempt >= MAX_RETRIES) {
+                    setConnectionError('Unable to connect after multiple attempts. Please refresh.');
+                    return;
+                }
+
+                const delay = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS);
+                retryCountRef.current += 1;
+
+                reconnectTimerRef.current = setTimeout(() => {
+                    if (socketRef.current?.readyState === WebSocket.CLOSED) {
+                        connect();
+                    }
+                }, delay);
             };
 
-            ws.onerror = (error) => {
-                // Only log error if we never connected (readyState is CONNECTING)
-                if (ws.readyState === WebSocket.CONNECTING) {
-                    console.error('[PodAI] WS Connection Failed:', error);
-                }
-                // Ignore errors after connection is established (they'll be handled by onclose)
+            ws.onerror = () => {
+                // Errors are handled by onclose which always fires afterward
             };
 
             socketRef.current = ws;
         } catch (err) {
             console.error('[PodAI] Failed to create WebSocket:', err);
         }
-    }, [episodeId, user]);
+    }, [episodeId, token, user, getWsUrl]);
 
     useEffect(() => {
+        retryCountRef.current = 0;
         connect();
         return () => {
-            if (socketRef.current) {
-                socketRef.current.close();
-            }
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+            socketRef.current?.close();
         };
     }, [connect]);
 
-    return { status, progress, isConnected };
+    return { status, progress, isConnected, connectionError };
 }

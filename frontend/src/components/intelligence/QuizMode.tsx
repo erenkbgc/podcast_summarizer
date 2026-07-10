@@ -19,8 +19,11 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
     const [isAnswered, setIsAnswered] = useState(false);
     const [score, setScore] = useState(0);
     const [showResults, setShowResults] = useState(false);
+    const [wrongIndices, setWrongIndices] = useState<number[]>([]);
+    const [reviewMode, setReviewMode] = useState(false);
+    const [reviewQuizzes, setReviewQuizzes] = useState<QuizQuestion[]>([]);
 
-    const limitedQuizzes = Array.isArray(quizzes) ? quizzes.slice(0, 10) : [];
+    const limitedQuizzes = reviewMode ? reviewQuizzes : (Array.isArray(quizzes) ? quizzes.slice(0, 10) : []);
     const q = limitedQuizzes[currentIdx];
     const normalizedOptions = (() => {
         if (!q) return [];
@@ -108,7 +111,26 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
                         </p>
                     </div>
 
-                    <div className="flex gap-3 w-full mt-4">
+                    <div className="flex gap-3 w-full mt-4 flex-col">
+                        {!reviewMode && wrongIndices.length > 0 && (
+                            <button
+                                onClick={() => {
+                                    const allQuizzes = Array.isArray(quizzes) ? quizzes.slice(0, 10) : [];
+                                    const missed = wrongIndices.map(i => allQuizzes[i]).filter(Boolean);
+                                    setReviewQuizzes(missed);
+                                    setReviewMode(true);
+                                    setCurrentIdx(0);
+                                    setScore(0);
+                                    setWrongIndices([]);
+                                    setSelectedOpt(null);
+                                    setIsAnswered(false);
+                                    setShowResults(false);
+                                }}
+                                className="w-full px-6 py-4 rounded-2xl font-bold uppercase tracking-widest text-[10px] transition-all hover:scale-[1.02] active:scale-95 bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30"
+                            >
+                                Review {wrongIndices.length} Missed
+                            </button>
+                        )}
                         <button
                             onClick={() => {
                                 setCurrentIdx(0);
@@ -116,10 +138,13 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
                                 setSelectedOpt(null);
                                 setIsAnswered(false);
                                 setShowResults(false);
+                                setWrongIndices([]);
+                                setReviewMode(false);
+                                setReviewQuizzes([]);
                             }}
-                            className="flex-1 px-6 py-4 rounded-2xl font-bold uppercase tracking-widest text-[10px] transition-all hover:scale-[1.02] active:scale-95 bg-secondary border border-white/5 hover:bg-secondary/80"
+                            className="w-full px-6 py-4 rounded-2xl font-bold uppercase tracking-widest text-[10px] transition-all hover:scale-[1.02] active:scale-95 bg-secondary border border-white/5 hover:bg-secondary/80"
                         >
-                            {t("retry")}
+                            {reviewMode ? 'Back to Full Quiz' : t("retry")}
                         </button>
                     </div>
                 </div>
@@ -130,7 +155,11 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
     const handleConfirm = () => {
         if (selectedOpt === null) return;
         const isCorrect = normalizedOptions[selectedOpt] === q.correct_answer || selectedOpt === Number(q.correct_answer);
-        if (isCorrect) setScore((prev) => prev + 1);
+        if (isCorrect) {
+            setScore((prev) => prev + 1);
+        } else {
+            setWrongIndices(prev => [...prev, currentIdx]);
+        }
         setIsAnswered(true);
     };
 
@@ -150,7 +179,8 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
                 <div className="space-y-2">
                     <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-widest text-primary/60">
                         <span className="flex items-center gap-2">
-                            <Zap size={10} className="text-primary" /> {t("syncingInsight", { n: currentIdx + 1 })}
+                            <Zap size={10} className={reviewMode ? "text-red-400" : "text-primary"} />
+                            {reviewMode ? <span className="text-red-400">Review Mode • Q{currentIdx + 1}</span> : t("syncingInsight", { n: currentIdx + 1 })}
                         </span>
                         <span>{Math.round(((currentIdx + 1) / limitedQuizzes.length) * 100)}%</span>
                     </div>
@@ -166,9 +196,13 @@ export function QuizMode({ quizzes, onSeek, t }: { quizzes: QuizQuestion[]; onSe
                             <button
                                 onClick={() => onSeek(q.source_start!)}
                                 className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-primary/20 bg-primary/10 text-[10px] font-black uppercase tracking-widest text-primary hover:bg-primary hover:text-white transition-all group"
+                                title={q.source_end !== undefined ? `Jump to ${formatTime(q.source_start)} - ${formatTime(q.source_end)}` : `Jump to ${formatTime(q.source_start)}`}
                             >
                                 <Play size={10} className="fill-current" />
-                                {t("evidence").replace("{time}", q.source_start !== undefined && q.source_end !== undefined ? `[${formatTime(q.source_start)} - ${formatTime(q.source_end)}]` : `[${formatTime(q.source_start)}]`)}
+                                <span className="inline">
+                                    {t("evidence")} • {formatTime(q.source_start)}
+                                    {q.source_end !== undefined && ` - ${formatTime(q.source_end)}`}
+                                </span>
                             </button>
                         </div>
                     )}

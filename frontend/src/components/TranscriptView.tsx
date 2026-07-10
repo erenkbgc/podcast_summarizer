@@ -50,15 +50,61 @@ export function TranscriptView({ segments, currentTime, onSeek, speakerMap, stat
     const scrollRef = useRef<HTMLDivElement>(null);
     const [autoScroll, setAutoScroll] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
+    const [matchFocusIdx, setMatchFocusIdx] = useState(0);
+    const searchInputRef = useRef<HTMLInputElement>(null);
     const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const lastActiveIndexRef = useRef<number>(-1);
 
     // 1. Filter segments by search query
-    const filteredSegments = useMemo(() => {
-        if (!searchQuery.trim()) return segments;
+    const matchingSegments = useMemo(() => {
+        if (!searchQuery.trim()) return [];
         const q = searchQuery.toLowerCase();
         return segments.filter(s => s.text.toLowerCase().includes(q));
     }, [segments, searchQuery]);
+
+    const filteredSegments = useMemo(() => {
+        if (!searchQuery.trim()) return segments;
+        return matchingSegments;
+    }, [segments, searchQuery, matchingSegments]);
+
+    const matchCount = matchingSegments.length;
+
+    // Clamp focus index when match count changes
+    useEffect(() => {
+        setMatchFocusIdx(0);
+    }, [searchQuery]);
+
+    // Cmd+F focuses search
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'f' && searchInputRef.current) {
+                e.preventDefault();
+                searchInputRef.current.focus();
+                searchInputRef.current.select();
+            }
+        };
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+    }, []);
+
+    // Seek to focused match and scroll
+    useEffect(() => {
+        if (!searchQuery || matchingSegments.length === 0) return;
+        const focused = matchingSegments[matchFocusIdx];
+        if (focused) {
+            onSeek(focused.start);
+            // Scroll focused match into view
+            if (scrollRef.current) {
+                const el = scrollRef.current.querySelector(`[data-match-idx="${matchFocusIdx}"]`) as HTMLElement;
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }, [matchFocusIdx, searchQuery]);
+
+    const navigateMatch = (dir: 1 | -1) => {
+        if (matchCount === 0) return;
+        setMatchFocusIdx(i => (i + dir + matchCount) % matchCount);
+    };
 
     // 2. Group consecutive segments by the same speaker
     const groupedSegments = useMemo(() => {
@@ -174,23 +220,54 @@ export function TranscriptView({ segments, currentTime, onSeek, speakerMap, stat
     return (
         <div className="flex-1 flex flex-col h-full bg-background/50 relative overflow-hidden">
             {/* Sticky Header / Search Toolbar */}
-            <div className="absolute top-0 left-0 right-0 z-20 px-6 py-4 bg-background/80 backdrop-blur-xl border-b border-white/5 flex items-center justify-between">
-                <div className="relative w-64 sm:w-80">
+            <div className="absolute top-0 left-0 right-0 z-20 px-6 py-4 bg-background/80 backdrop-blur-xl border-b border-white/5 flex items-center gap-3">
+                <div className="relative flex-1 max-w-sm">
                     <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-                    <input 
-                        type="text" 
-                        placeholder={preferred_lang?.startsWith('tr') ? "Dökümde ara..." : "Search transcript..."}
+                    <input
+                        ref={searchInputRef}
+                        type="text"
+                        placeholder={preferred_lang?.startsWith('tr') ? "Dökümde ara... (Cmd+F)" : "Search transcript... (Cmd+F)"}
                         value={searchQuery}
                         onChange={(e) => { setSearchQuery(e.target.value); setAutoScroll(false); }}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); navigateMatch(e.shiftKey ? -1 : 1); }
+                            if (e.key === 'Escape') { setSearchQuery(""); setAutoScroll(true); }
+                        }}
                         className="w-full bg-secondary/30 border border-white/5 rounded-full py-2 pl-9 pr-4 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50 text-foreground transition-all"
                     />
                 </div>
-                <button 
-                    onClick={() => { setSearchQuery(""); setAutoScroll(true); }} 
-                    className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-primary bg-primary/10 px-4 py-2 rounded-full hover:bg-primary/20 transition-colors shadow-[0_0_15px_rgba(var(--primary),0.1)]"
+
+                {/* Match count + prev/next */}
+                {searchQuery && (
+                    <div className="flex items-center gap-1 shrink-0">
+                        <span className="text-[10px] font-mono text-muted-foreground/70 min-w-[52px] text-right">
+                            {matchCount > 0 ? `${matchFocusIdx + 1}/${matchCount}` : "0 found"}
+                        </span>
+                        <button
+                            onClick={() => navigateMatch(-1)}
+                            disabled={matchCount === 0}
+                            className="p-1.5 rounded-lg hover:bg-white/10 disabled:opacity-30 text-muted-foreground hover:text-white transition-all"
+                            title="Previous match (Shift+Enter)"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+                        </button>
+                        <button
+                            onClick={() => navigateMatch(1)}
+                            disabled={matchCount === 0}
+                            className="p-1.5 rounded-lg hover:bg-white/10 disabled:opacity-30 text-muted-foreground hover:text-white transition-all"
+                            title="Next match (Enter)"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                        </button>
+                    </div>
+                )}
+
+                <button
+                    onClick={() => { setSearchQuery(""); setAutoScroll(true); }}
+                    className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-primary bg-primary/10 px-4 py-2 rounded-full hover:bg-primary/20 transition-colors shadow-[0_0_15px_rgba(var(--primary),0.1)] shrink-0"
                 >
                     <Clock className="w-3 h-3" />
-                    {preferred_lang?.startsWith('tr') ? "Sese Senkronize Ol" : "Sync to Audio"}
+                    {preferred_lang?.startsWith('tr') ? "Senkronize Et" : "Sync"}
                 </button>
             </div>
 
@@ -242,14 +319,18 @@ export function TranscriptView({ segments, currentTime, onSeek, speakerMap, stat
                                     {group.items.map((segment) => {
                                         const globalIdx = segments.findIndex(s => s.start === segment.start);
                                         const isSentenceActive = currentTime >= segment.start && currentTime <= segment.end && !searchQuery;
-                                        
+                                        const matchIdx = searchQuery ? matchingSegments.findIndex(s => s.start === segment.start) : -1;
+                                        const isFocusedMatch = matchIdx !== -1 && matchIdx === matchFocusIdx;
+
                                         return (
-                                            <div 
+                                            <div
                                                 key={`seg-${segment.start}`}
                                                 data-segment-idx={globalIdx}
+                                                data-match-idx={matchIdx >= 0 ? matchIdx : undefined}
                                                 onClick={() => onSeek(segment.start)}
                                                 className={cn(
                                                     "group/sentence relative cursor-pointer p-3 -ml-3 rounded-xl transition-all duration-300",
+                                                    isFocusedMatch ? "bg-yellow-500/10 border border-yellow-500/40 shadow-[0_0_15px_rgba(234,179,8,0.15)]" :
                                                     isSentenceActive ? "bg-primary/10 shadow-[0_0_20px_rgba(var(--primary),0.1)] border border-primary/20" : "hover:bg-secondary/40 border border-transparent"
                                                 )}
                                             >
