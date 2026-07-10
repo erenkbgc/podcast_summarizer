@@ -28,9 +28,7 @@ PodAI ingests any podcast — from a Spotify URL, Apple Podcasts link, or raw RS
 
 <div align="center">
 
-### 🎬 [▶ Watch the Full Demo](https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4)
-
-[![Demo Preview](frontend/public/screenshots/dashboard.jpg)](https://github.com/erenkbgc/podcast_summarizer/raw/main/frontend/public/videos/demo.mp4)
+https://github.com/user-attachments/assets/a3477b39-7700-42cf-a8f9-286eef92e243
 
 </div>
 
